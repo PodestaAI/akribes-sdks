@@ -1,0 +1,66 @@
+import type { HttpClient } from '../http';
+import { nullOn404 } from '../http';
+import type { ScriptVersion, ScriptVersionResponse, DryRunResult } from '../types';
+
+export class VersionsClient {
+  constructor(
+    private http: HttpClient,
+    private projectId: number,
+    private defaultPublishedBy: string | undefined,
+  ) {}
+
+  private path(scriptName: string, ...segments: string[]) {
+    return this.http.scriptPath(this.projectId, scriptName, ...segments);
+  }
+
+  async list(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptVersion[]> {
+    return (await this.http.fetchOk(this.path(scriptName, 'versions'), opts)).json();
+  }
+
+  async get(scriptName: string, versionId: number, opts?: { signal?: AbortSignal }): Promise<ScriptVersion | null> {
+    return nullOn404(async () =>
+      (await this.http.fetchOk(this.path(scriptName, 'versions', String(versionId)), opts)).json()
+    );
+  }
+
+  async getLatest(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptVersionResponse | null> {
+    return nullOn404(async () =>
+      (await this.http.fetchOk(this.path(scriptName, 'latest'), opts)).json()
+    );
+  }
+
+  /** @deprecated Use scripts.saveDraft + versions.publish instead */
+  async save(scriptName: string, source: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    await this.http.fetchOk(this.path(scriptName, 'versions'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }), signal: opts?.signal,
+    });
+  }
+
+  async publish(
+    scriptName: string,
+    label: string | null,
+    channels: string[],
+    publishedBy?: string,
+    opts?: { force?: boolean; reason?: string; dryRun?: boolean; signal?: AbortSignal },
+  ): Promise<ScriptVersion | DryRunResult> {
+    const body = await (await this.http.fetchOk(this.path(scriptName, 'publish'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label, channels,
+        published_by: publishedBy ?? this.defaultPublishedBy,
+        force: opts?.force,
+        // The server persists `reason` on the versions row's
+        // force_published_reason column when force is true and the
+        // unified contract check produced breaks. ≥ 20 chars enforced
+        // server-side; the Studio enforces it client-side too for fast
+        // feedback but the source of truth is the server.
+        reason: opts?.reason,
+        dry_run: opts?.dryRun,
+      }),
+      signal: opts?.signal,
+    })).json() as { dry_run?: boolean; version?: ScriptVersion } & DryRunResult;
+    if (body.dry_run) return body as DryRunResult;
+    return body.version as ScriptVersion;
+  }
+}

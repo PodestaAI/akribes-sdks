@@ -1,0 +1,28 @@
+[package]
+name = "akribes-types"
+version = "0.21.17"
+edition = "2024"
+rust-version.workspace = true
+description = "Wire-level types shared by the Akribes SDK and core (events, values, AST shapes, errors)."
+license = "MIT"
+homepage = "https://akribes.ai"
+repository = "https://github.com/PodestaAI/akribes-sdks"
+documentation = "https://akribes.ai"
+readme = "README.md"
+keywords = ["akribes", "ai", "llm", "agent"]
+categories = ["api-bindings", "data-structures"]
+
+[lib]
+name = "akribes_types"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Parse the HTTP-date form of `Retry-After` headers in
+# `ErrorCode::parse_retry_after_ms`. Tiny, dependency-free crate.
+httpdate = "1"
+# Warn-log on `ErrorCode::from_wire("AKRIBES-E-OTHER")` decode so
+# producers that skip a more specific code are visible in prod.
+tracing = { workspace = true }

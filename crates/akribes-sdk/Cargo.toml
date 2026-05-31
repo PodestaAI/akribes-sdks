@@ -1,0 +1,42 @@
+[package]
+name = "akribes-sdk"
+version = "0.21.17"
+edition = "2024"
+rust-version.workspace = true
+description = "Rust client SDK for the Akribes workflow server"
+license = "MIT"
+homepage = "https://akribes.ai"
+repository = "https://github.com/PodestaAI/akribes-sdks"
+documentation = "https://akribes.ai"
+readme = "README.md"
+keywords = ["akribes", "ai", "llm", "agent", "sdk"]
+categories = ["api-bindings", "asynchronous"]
+
+[lib]
+name = "akribes_sdk"
+
+[dependencies]
+# Wire-level types shared with `akribes-core`. The SDK used to depend on
+# the full `akribes-core` (parser, analyzer, compiler, engine, providers);
+# extracting the wire envelope into its own crate (#TBD) means the SDK
+# now compiles without pulling any of those in.
+akribes-types = { path = "../akribes-types", version = "0.21.16" }
+tracing = { workspace = true }
+reqwest = { workspace = true, features = ["stream", "multipart"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+tokio-util = { workspace = true, features = ["rt"] }
+futures = { workspace = true }
+urlencoding = "2"
+serde_urlencoded = "0.7"
+uuid = { workspace = true }
+sha2 = "0.11"
+hex = "0.4"
+
+[features]
+default = []
+
+[dev-dependencies]
+mockito = "1.6.1"
