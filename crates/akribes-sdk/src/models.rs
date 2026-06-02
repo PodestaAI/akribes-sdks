@@ -1,5 +1,4 @@
 /// Data types returned by and sent to the Akribes API.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -322,6 +321,33 @@ pub struct ExecutionChildSummary {
     pub script_name: String,
 }
 
+/// Per-task cost / token / duration breakdown row returned by
+/// `GET /executions/{id}/tasks`. One row per `execution_tasks` entry,
+/// populated as `TaskEnd` events arrive. Mirrors the server's
+/// `get_execution_tasks` row shape and the TS SDK's `ExecutionTaskSummary`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExecutionTaskSummary {
+    pub task_name: String,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<i64>,
+    pub attempt: i32,
+    pub finished_at: String,
+}
+
+/// Envelope returned by `GET /executions/{id}/tasks`. Mirrors the server's
+/// `get_execution_tasks` response and the TS SDK's `ExecutionTasksResponse`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExecutionTasksResponse {
+    pub execution_id: String,
+    pub tasks: Vec<ExecutionTaskSummary>,
+}
+
 // ── Engine events ────────────────────────────────────────────────────────────
 //
 // The raw wire-format event is now re-exported from `akribes-core`. The SDK's
@@ -346,7 +372,9 @@ pub(crate) fn engine_event_type_name(evt: &EngineEvent) -> &'static str {
         EngineEvent::AgentReasoning { .. } => "AgentReasoning",
         EngineEvent::Suspended { .. } => "Suspended",
         EngineEvent::Resumed { .. } => "Resumed",
-        EngineEvent::WorkflowEnd(akribes_types::event::WorkflowEndPayload { value: _, .. }) => "WorkflowEnd",
+        EngineEvent::WorkflowEnd(akribes_types::event::WorkflowEndPayload { value: _, .. }) => {
+            "WorkflowEnd"
+        }
         EngineEvent::Error { .. } => "Error",
         EngineEvent::NodeStart(..) => "NodeStart",
         EngineEvent::NodeEnd { .. } => "NodeEnd",
@@ -507,27 +535,36 @@ pub enum RegistryEvent {
     },
 }
 
+/// Hub-wire events for live bench runs, broadcast on the project `/events`
+/// stream as `HubEvent::Bench(..)`. Mirrors the server's `BenchEvent`
+/// (`crates/akribes-server/src/models.rs`) exactly: adjacently tagged
+/// (`{"type":"RunStarted","payload":{...}}`), three variants that reuse the
+/// existing [`BenchRun`] / [`BenchResult`] row models.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type", content = "payload")]
-pub enum EvalEvent {
+pub enum BenchEvent {
+    /// A bench run transitioned `pending → running`. Carries the row so
+    /// subscribers that didn't cache the trigger response have it.
     RunStarted {
         project_id: i64,
         script_name: String,
-        run: EvalRun,
+        run: BenchRun,
     },
-    RunProgress {
+    /// A single case result landed (workflow + judge complete, or a failure
+    /// was recorded). Sent before `RunFinished` so progress indicators can
+    /// update incrementally.
+    ResultRecorded {
         project_id: i64,
         script_name: String,
         run_id: i64,
-        completed_cases: i32,
-        total_cases: Option<i32>,
-        average_score: Option<f64>,
-        latest_result: Option<EvalCaseReport>,
+        result: BenchResult,
     },
+    /// The coordinator reached a terminal status (`completed` / `failed` /
+    /// `canceled`). Final aggregates land on the row.
     RunFinished {
         project_id: i64,
         script_name: String,
-        run: EvalRun,
+        run: BenchRun,
     },
 }
 
@@ -558,7 +595,13 @@ pub enum HubEvent {
         at: Option<String>,
     },
     Registry(RegistryEvent),
-    Eval(EvalEvent),
+    /// A live bench-run lifecycle event (`RunStarted` / `ResultRecorded` /
+    /// `RunFinished`). Previously dropped on the floor — and, because the
+    /// hub batch was decoded as `Vec<HubEvent>` with no catch-all, a Bench
+    /// frame co-occurring with `Execution` frames in the same batch dropped
+    /// the *entire* batch. The per-element decode in `sub::events` plus this
+    /// typed arm fix both halves (#bench-hub-events).
+    Bench(BenchEvent),
 }
 
 // ── Draft response ──────────────────────────────────────────────────────
@@ -697,13 +740,18 @@ pub enum ProjectScope {
 pub struct WildcardMarker;
 
 impl Serialize for WildcardMarker {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str("*")
     }
 }
 
 impl<'de> Deserialize<'de> for WildcardMarker {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         if s == "*" {
             Ok(WildcardMarker)
@@ -935,78 +983,6 @@ pub(crate) struct AdhocRunRequest<'a> {
     pub triggered_by: Option<&'a str>,
 }
 
-// ── Evals ────────────────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct EvalSuite {
-    pub id: i64,
-    pub script_id: i64,
-    pub name: String,
-    pub runner_url: String,
-    pub config: serde_json::Value,
-    #[serde(default)]
-    pub auto_run_channels: Vec<String>,
-    pub created_at: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct EvalRun {
-    pub id: i64,
-    pub suite_id: i64,
-    pub script_id: i64,
-    pub version_id: Option<i64>,
-    pub channel: Option<String>,
-    pub source_hash: String,
-    pub status: String,
-    pub total_cases: Option<i32>,
-    pub completed_cases: i32,
-    pub average_score: Option<f64>,
-    pub runner_run_id: Option<String>,
-    pub detail_url: Option<String>,
-    pub triggered_by: Option<String>,
-    pub started_at: String,
-    pub finished_at: Option<String>,
-    pub error: Option<String>,
-}
-
-/// A per-case report pushed by an eval runner during a run.
-/// Matches the server's `EvalCaseReport`.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct EvalCaseReport {
-    pub case_id: String,
-    pub score: Option<f64>,
-    pub status: String,
-    #[serde(default)]
-    pub metadata: Option<serde_json::Value>,
-    pub execution_id: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct EvalResult {
-    pub id: i64,
-    pub run_id: i64,
-    pub case_id: String,
-    pub score: Option<f64>,
-    pub status: String,
-    pub metadata: Option<serde_json::Value>,
-    pub execution_id: Option<String>,
-    pub created_at: String,
-}
-
-/// One row per eval suite for the project-level cross-script dashboard.
-/// Returned by `GET /projects/{id}/eval-suite-summaries` (sub-spec 1a).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct EvalSuiteSummary {
-    pub suite_id: i64,
-    pub script_id: i64,
-    pub script_name: String,
-    pub suite_name: String,
-    pub latest_run_id: Option<i64>,
-    pub latest_run_at: Option<String>,
-    pub latest_avg_score: Option<f64>,
-    pub prior_avg_score: Option<f64>,
-}
-
 #[derive(Serialize)]
 pub(crate) struct ResumeRequest {
     pub token: String,
@@ -1018,38 +994,6 @@ pub(crate) struct RunWithS3Request {
     pub inputs: HashMap<String, S3DocumentRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub triggered_by: Option<String>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct CreateEvalSuiteRequest<'a> {
-    pub name: &'a str,
-    pub runner_url: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_run_channels: Option<Vec<String>>,
-}
-
-#[derive(Serialize, Default)]
-pub(crate) struct UpdateEvalSuiteRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runner_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_run_channels: Option<Vec<String>>,
-}
-
-#[derive(Serialize, Default)]
-pub(crate) struct TriggerEvalRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_publish: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triggered_by: Option<String>,
 }
@@ -1264,9 +1208,20 @@ pub struct BenchResult {
     pub cache_hit: bool,
     #[serde(default)]
     pub input_hash: Option<String>,
+    /// Human-readable error message captured when `status` is
+    /// `workflow_failed` or `judge_failed`; `None` on `ok`/`cached` rows.
+    /// Mirrors the server's `BenchResult.error` column — present on both the
+    /// `/bench-runs/{id}/results` read path and the live SSE `result` frame.
+    #[serde(default)]
+    pub error: Option<String>,
     pub created_at: String,
     /// Parsed `WorkflowEnd` payload from the workflow execution. `None` when
     /// the workflow failed, was canceled, or this is a cache-hit row.
+    ///
+    /// Only the `/bench-runs/{id}/results` read path (which joins
+    /// `executions.result`) populates this; the live SSE `result` frame
+    /// broadcasts the bare `BenchResult` row, so this stays `None` on
+    /// events from [`crate::sub::bench::BenchRunsClient::subscribe_run_events`].
     #[serde(default)]
     pub workflow_output: Option<serde_json::Value>,
 }
@@ -1421,13 +1376,30 @@ pub struct TriggerBenchRunRequest {
     pub case_ids: Option<Vec<String>>,
 }
 
-/// Page of bench-run events emitted by `GET /bench-runs/{id}/events`.
-/// The MCP layer polls this endpoint for incremental updates rather than
-/// subscribing to the SSE form — same path, JSON wrapper.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct BenchRunEventsPage {
-    #[serde(default)]
-    pub events: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub complete: Option<bool>,
+/// A typed event from the live SSE bench-run stream
+/// (`GET /bench-runs/{id}/events`, `Accept: text/event-stream`).
+///
+/// The server emits three named SSE event types on this path
+/// (`crates/akribes-server/src/handlers/bench.rs::bench_run_events`):
+///  - `result` — a freshly-recorded per-case [`BenchResult`] row.
+///  - `lagged` — the broadcast subscriber fell behind and dropped `n`
+///    results (`{"dropped":N}`); re-fetch `/bench-runs/{id}/results` for
+///    the authoritative set.
+///  - `terminal` — the run reached a terminal status (`{"status":"..."}`);
+///    the stream ends after this frame. `status` is one of the
+///    `bench_runs.status` values (`completed`, `failed`, `canceled`,
+///    or `unknown` if the row vanished).
+///
+/// Mirrors the TS SDK's `subscribeRunEvents` handler dispatch
+/// (`packages/akribes-sdk-ts/src/sub/bench.ts`), with `terminal` lifted
+/// into a typed variant so Rust consumers can detect end-of-stream
+/// without a side-channel.
+#[derive(Clone, Debug)]
+pub enum BenchRunEvent {
+    /// A new per-case result row was recorded.
+    Result(Box<BenchResult>),
+    /// The broadcast subscriber lagged and dropped `dropped` results.
+    Lagged { dropped: u64 },
+    /// The run reached a terminal status; the stream ends after this.
+    Terminal { status: String },
 }

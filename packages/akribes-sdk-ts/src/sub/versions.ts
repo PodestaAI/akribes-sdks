@@ -14,18 +14,18 @@ export class VersionsClient {
   }
 
   async list(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptVersion[]> {
-    return (await this.http.fetchOk(this.path(scriptName, 'versions'), opts)).json();
+    return this.http.fetchJson<ScriptVersion[]>(this.path(scriptName, 'versions'), opts);
   }
 
   async get(scriptName: string, versionId: number, opts?: { signal?: AbortSignal }): Promise<ScriptVersion | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(this.path(scriptName, 'versions', String(versionId)), opts)).json()
+      this.http.fetchJson<ScriptVersion>(this.path(scriptName, 'versions', String(versionId)), opts)
     );
   }
 
   async getLatest(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptVersionResponse | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(this.path(scriptName, 'latest'), opts)).json()
+      this.http.fetchJson<ScriptVersionResponse>(this.path(scriptName, 'latest'), opts)
     );
   }
 

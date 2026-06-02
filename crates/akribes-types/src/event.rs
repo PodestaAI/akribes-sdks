@@ -29,8 +29,14 @@ pub struct CachedToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail")]
 pub enum ChildOutcome {
-    Ok { value: serde_json::Value },
-    Err { kind: String, message: String, code: Option<String> },
+    Ok {
+        value: serde_json::Value,
+    },
+    Err {
+        kind: String,
+        message: String,
+        code: Option<String>,
+    },
 }
 
 /// Default for `EngineEvent::Error::code` on payloads from older SDK
@@ -247,10 +253,12 @@ impl WorkflowTotals {
         if let Some(u) = usage {
             self.total_input_tokens = self.total_input_tokens.saturating_add(u.input_tokens);
             self.total_output_tokens = self.total_output_tokens.saturating_add(u.output_tokens);
-            self.total_cached_input_tokens =
-                self.total_cached_input_tokens.saturating_add(u.cached_input_tokens);
-            self.total_thinking_tokens =
-                self.total_thinking_tokens.saturating_add(u.reasoning_tokens);
+            self.total_cached_input_tokens = self
+                .total_cached_input_tokens
+                .saturating_add(u.cached_input_tokens);
+            self.total_thinking_tokens = self
+                .total_thinking_tokens
+                .saturating_add(u.reasoning_tokens);
         }
     }
 
@@ -258,17 +266,21 @@ impl WorkflowTotals {
     /// Used by the engine when the relay surfaces a child workflow's
     /// rollup — the outer chain's totals subsume every sub-script's.
     pub fn merge(&mut self, other: &WorkflowTotals) {
-        self.total_input_tokens =
-            self.total_input_tokens.saturating_add(other.total_input_tokens);
-        self.total_output_tokens =
-            self.total_output_tokens.saturating_add(other.total_output_tokens);
+        self.total_input_tokens = self
+            .total_input_tokens
+            .saturating_add(other.total_input_tokens);
+        self.total_output_tokens = self
+            .total_output_tokens
+            .saturating_add(other.total_output_tokens);
         self.total_cached_input_tokens = self
             .total_cached_input_tokens
             .saturating_add(other.total_cached_input_tokens);
-        self.total_thinking_tokens =
-            self.total_thinking_tokens.saturating_add(other.total_thinking_tokens);
-        self.total_tool_tokens =
-            self.total_tool_tokens.saturating_add(other.total_tool_tokens);
+        self.total_thinking_tokens = self
+            .total_thinking_tokens
+            .saturating_add(other.total_thinking_tokens);
+        self.total_tool_tokens = self
+            .total_tool_tokens
+            .saturating_add(other.total_tool_tokens);
         self.total_cost_usd += other.total_cost_usd;
         self.task_count = self.task_count.saturating_add(other.task_count);
     }
@@ -293,7 +305,10 @@ pub struct WorkflowEndPayload {
 
 impl Default for WorkflowEndPayload {
     fn default() -> Self {
-        Self { value: Value::Null, totals: WorkflowTotals::default() }
+        Self {
+            value: Value::Null,
+            totals: WorkflowTotals::default(),
+        }
     }
 }
 
@@ -302,7 +317,10 @@ impl WorkflowEndPayload {
     /// Used by call sites that don't have totals yet — they get the
     /// historical behaviour automatically.
     pub fn new(value: Value) -> Self {
-        Self { value, totals: WorkflowTotals::default() }
+        Self {
+            value,
+            totals: WorkflowTotals::default(),
+        }
     }
 
     /// Construct a payload with both value and totals.
@@ -444,11 +462,13 @@ pub struct ValidationErrorWire {
 /// ("Suspended wire shape (S4 ↔ S6) = S6's embedded-payload shape").
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
+#[derive(Default)]
 pub enum SuspendTrigger {
     /// The DAG reached an explicit `checkpoint cp(...)` call site. This is
     /// today's only behaviour; the variant carries no payload because the
     /// checkpoint's own `expects:` schema fully describes what comes back
     /// on resume.
+    #[default]
     DagPosition,
     /// The task's `on_validation_exhausted:` property fired: all
     /// validation retries consumed without producing a payload that passes
@@ -489,15 +509,6 @@ pub enum SuspendTrigger {
         variant: String,
         payload: serde_json::Value,
     },
-}
-
-impl Default for SuspendTrigger {
-    fn default() -> Self {
-        // Every `Suspended` event had this shape before Stream 6 landed;
-        // `#[serde(default)]` on the field means old servers' payloads
-        // (which omit the field entirely) deserialize as `DagPosition`.
-        SuspendTrigger::DagPosition
-    }
 }
 
 /// Mid-loop checkpoint context attached to [`EngineEvent::Suspended`] when a
@@ -548,11 +559,13 @@ pub struct LoopSuspendContext {
 /// keeps flowing. Do *not* match without a wildcard on this enum.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TaskEndVariant {
     /// The task produced a well-typed value that passed every stage of the
     /// parse → schema → custom validation pipeline. This is the pre-#206
     /// default and the variant carried when `#[serde(default)]` fires on
     /// payloads that omit the field entirely (older servers).
+    #[default]
     Success,
     /// The task's declared return type was `T | Unable` and the agent
     /// emitted a canonical `{"unable": {...}}` envelope. The `value` field
@@ -574,16 +587,6 @@ pub enum TaskEndVariant {
     /// see it as `Unknown` until its own upgrade.
     #[serde(other)]
     Unknown,
-}
-
-impl Default for TaskEndVariant {
-    fn default() -> Self {
-        // Wire-compat with pre-#206 payloads: the field is absent, and
-        // `#[serde(default)]` carries it to `Success`. Every existing
-        // `TaskEnd` event without the discriminator was, by definition, a
-        // success (the Unable path didn't exist yet).
-        TaskEndVariant::Success
-    }
 }
 
 /// `serde` adapters that project a [`Value`] (or a container of it) to and
@@ -656,7 +659,10 @@ mod value_map_wire {
         d: D,
     ) -> Result<HashMap<String, Value>, D::Error> {
         let raw = HashMap::<String, serde_json::Value>::deserialize(d)?;
-        Ok(raw.into_iter().map(|(k, v)| (k, Value::from_json(&v))).collect())
+        Ok(raw
+            .into_iter()
+            .map(|(k, v)| (k, Value::from_json(&v)))
+            .collect())
     }
 }
 
@@ -685,9 +691,9 @@ pub enum EngineEvent {
         message: String,
     },
     StateUpdate(String, #[serde(with = "value_wire")] Value),
-    WorkflowStart(usize), // total tasks
+    WorkflowStart(usize),              // total tasks
     TaskStart(String, Option<String>), // (name, on_error policy label)
-    TaskPrompt(String, String), // (task_name, rendered_prompt)
+    TaskPrompt(String, String),        // (task_name, rendered_prompt)
     TaskEnd {
         task: String,
         on_error_label: Option<String>,
@@ -1452,18 +1458,24 @@ impl EngineEvent {
         // parent_task, parent_node_id, attempt)` frames anchored above
         // a leaf. Walk inward, accumulating frames; the OUTER frame at
         // each step is the immediate parent of the next inward step.
-        let (script_name, parent_task, parent_node_id, attempt, outer_path, child) =
-            match self {
-                EngineEvent::SubScript {
-                    script_name,
-                    parent_task,
-                    parent_node_id,
-                    attempt,
-                    parent_path,
-                    child,
-                } => (script_name, parent_task, parent_node_id, attempt, parent_path, child),
-                other => return other,
-            };
+        let (script_name, parent_task, parent_node_id, attempt, outer_path, child) = match self {
+            EngineEvent::SubScript {
+                script_name,
+                parent_task,
+                parent_node_id,
+                attempt,
+                parent_path,
+                child,
+            } => (
+                script_name,
+                parent_task,
+                parent_node_id,
+                attempt,
+                parent_path,
+                child,
+            ),
+            other => return other,
+        };
 
         // Path order is `[outermost_ancestor, ..., immediate_parent_of_innermost]`.
         // `outer_path` is already in that order (legacy emissions have it empty).
@@ -1536,7 +1548,8 @@ impl EngineEvent {
         stop_reason: Option<String>,
     ) -> Self {
         let total_length = model_response.len() as u64;
-        let (response, truncated) = if model_response.len() > VALIDATION_FAILURE_RESPONSE_CAP_BYTES {
+        let (response, truncated) = if model_response.len() > VALIDATION_FAILURE_RESPONSE_CAP_BYTES
+        {
             // Walk down to the nearest char boundary so we don't
             // produce a fragment of a multi-byte UTF-8 sequence.
             let mut end = VALIDATION_FAILURE_RESPONSE_CAP_BYTES;
@@ -1607,10 +1620,26 @@ mod tests {
             variant: TaskEndVariant::Success,
         };
         let s = serde_json::to_string(&e).unwrap();
-        assert!(s.contains("\"value\""), "serialized event should contain 'value' key: {}", s);
-        assert!(s.contains("\"value_type\""), "serialized event should contain 'value_type' key: {}", s);
-        assert!(s.contains("\"attempt\":2"), "serialized event should contain 'attempt':2: {}", s);
-        assert!(s.contains("\"variant\":\"success\""), "variant should round-trip as snake_case 'success': {}", s);
+        assert!(
+            s.contains("\"value\""),
+            "serialized event should contain 'value' key: {}",
+            s
+        );
+        assert!(
+            s.contains("\"value_type\""),
+            "serialized event should contain 'value_type' key: {}",
+            s
+        );
+        assert!(
+            s.contains("\"attempt\":2"),
+            "serialized event should contain 'attempt':2: {}",
+            s
+        );
+        assert!(
+            s.contains("\"variant\":\"success\""),
+            "variant should round-trip as snake_case 'success': {}",
+            s
+        );
     }
 
     #[test]
@@ -1632,7 +1661,8 @@ mod tests {
             usage: None,
             variant: TaskEndVariant::Success,
         };
-        let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        let j: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         let value = &j["payload"]["value"];
         assert_eq!(value["exit_code"], serde_json::json!(0));
         assert_eq!(value["stdout"], serde_json::json!("hi\n"));
@@ -1657,7 +1687,8 @@ mod tests {
         obj.insert("exit_code".to_string(), Value::Int(0));
         obj.insert("duration_ms".to_string(), Value::Int(12));
         let e = EngineEvent::WorkflowEnd(WorkflowEndPayload::new(Value::Object(obj)));
-        let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        let j: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         let payload = &j["payload"];
         // The workflow output is now nested under `payload.value`.
         let value = &payload["value"];
@@ -1868,7 +1899,9 @@ mod tests {
         };
         let flat = evt.flatten_subscript_chain();
         match flat {
-            EngineEvent::SubScript { parent_path, child, .. } => {
+            EngineEvent::SubScript {
+                parent_path, child, ..
+            } => {
                 assert!(parent_path.is_empty());
                 assert!(matches!(*child, EngineEvent::Log(_)));
             }
@@ -1900,7 +1933,11 @@ mod tests {
         let s = serde_json::to_string(&e).unwrap();
         assert!(s.contains("\"attempt\":1"), "attempt should be 1: {}", s);
         // value_type: None serializes as null
-        assert!(s.contains("\"value_type\":null"), "value_type should be null: {}", s);
+        assert!(
+            s.contains("\"value_type\":null"),
+            "value_type should be null: {}",
+            s
+        );
     }
 
     #[test]
@@ -2049,7 +2086,10 @@ mod tests {
         assert!(s.contains("\"turn\":2"), "{s}");
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::Suspended { loop_context: Some(ctx), .. } => {
+            EngineEvent::Suspended {
+                loop_context: Some(ctx),
+                ..
+            } => {
                 assert_eq!(ctx.loop_name, "research");
                 assert_eq!(ctx.turn, 2);
                 assert_eq!(ctx.loop_id, "11111111-2222-3333-4444-555555555555");
@@ -2123,7 +2163,11 @@ mod tests {
         assert!(s.contains("\"variant\":\"ClaimErr\""), "{s}");
         let back: SuspendTrigger = serde_json::from_str(&s).unwrap();
         match back {
-            SuspendTrigger::AgentVariant { task_name, variant, payload } => {
+            SuspendTrigger::AgentVariant {
+                task_name,
+                variant,
+                payload,
+            } => {
                 assert_eq!(task_name, "decompose");
                 assert_eq!(variant, "ClaimErr");
                 assert_eq!(
@@ -2148,9 +2192,7 @@ mod tests {
             total_length: 2,
             missing_fields: vec!["/classifications".into()],
             extra_fields: vec![],
-            type_errors: vec![
-                "expected string, got null at /summary".into(),
-            ],
+            type_errors: vec!["expected string, got null at /summary".into()],
             stop_reason: Some("max_tokens".into()),
         };
         let s = serde_json::to_string(&e).unwrap();
@@ -2204,7 +2246,10 @@ mod tests {
         match back {
             SuspendTrigger::AgentUnable { task_name, unable } => {
                 assert_eq!(task_name, "escalate");
-                assert_eq!(unable.category, crate::value::UnableCategory::InputAmbiguous);
+                assert_eq!(
+                    unable.category,
+                    crate::value::UnableCategory::InputAmbiguous
+                );
             }
             other => panic!("expected AgentUnable, got {other:?}"),
         }
@@ -2267,7 +2312,10 @@ mod tests {
                 cache_ttl: _,
             } => {
                 assert_eq!(agent, "researcher");
-                assert_eq!(loop_id.as_deref(), Some("11111111-2222-3333-4444-555555555555"));
+                assert_eq!(
+                    loop_id.as_deref(),
+                    Some("11111111-2222-3333-4444-555555555555")
+                );
                 assert_eq!(turn, Some(3));
                 assert_eq!(threshold_pct, Some(70));
                 assert_eq!(threshold_abs, Some(140_000));
@@ -2303,7 +2351,12 @@ mod tests {
         assert!(s.contains("\"strategy\":\"provider_native\""), "{s}");
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::ContextCompacted { provider_native, loop_id, turn, .. } => {
+            EngineEvent::ContextCompacted {
+                provider_native,
+                loop_id,
+                turn,
+                ..
+            } => {
                 assert!(provider_native);
                 assert!(loop_id.is_none());
                 assert!(turn.is_none());
@@ -2368,7 +2421,11 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::RuntimeStart { task_name, runtime_name, language } => {
+            EngineEvent::RuntimeStart {
+                task_name,
+                runtime_name,
+                language,
+            } => {
                 assert_eq!(task_name, "analyze");
                 assert_eq!(runtime_name, "run_python");
                 assert_eq!(language, "python");
@@ -2409,7 +2466,11 @@ mod tests {
 
         let back: EngineEvent = serde_json::from_value(j).unwrap();
         match back {
-            EngineEvent::RuntimeEnd { exit_code, duration_ms, .. } => {
+            EngineEvent::RuntimeEnd {
+                exit_code,
+                duration_ms,
+                ..
+            } => {
                 assert_eq!(exit_code, 0);
                 assert_eq!(duration_ms, 1234);
             }
@@ -2526,7 +2587,12 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::ToolApprovalResolved { token, approved, reason, .. } => {
+            EngineEvent::ToolApprovalResolved {
+                token,
+                approved,
+                reason,
+                ..
+            } => {
                 assert_eq!(token, "tok_abc");
                 assert!(approved);
                 assert_eq!(reason.as_deref(), Some("operator approved"));
@@ -2547,7 +2613,9 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::ToolApprovalSkipped { tool_ref, reason, .. } => {
+            EngineEvent::ToolApprovalSkipped {
+                tool_ref, reason, ..
+            } => {
                 assert_eq!(tool_ref, "gh.list_issues");
                 assert_eq!(reason, "policy:read_only");
             }
@@ -2594,7 +2662,10 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::LLMReplayCacheHit { node_id, call_index } => {
+            EngineEvent::LLMReplayCacheHit {
+                node_id,
+                call_index,
+            } => {
                 assert_eq!(node_id, "n42");
                 assert_eq!(call_index, 3);
             }
@@ -2636,7 +2707,10 @@ mod tests {
             usage: None,
         };
         let s2 = serde_json::to_string(&ev2).unwrap();
-        assert!(!s2.contains("\"usage\""), "usage should be skipped when None: {s2}");
+        assert!(
+            !s2.contains("\"usage\""),
+            "usage should be skipped when None: {s2}"
+        );
     }
 
     #[test]
@@ -2654,7 +2728,11 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         let back: EngineEvent = serde_json::from_str(&s).unwrap();
         match back {
-            EngineEvent::SubScript { parent_node_id, attempt, .. } => {
+            EngineEvent::SubScript {
+                parent_node_id,
+                attempt,
+                ..
+            } => {
                 assert_eq!(parent_node_id, Some(13));
                 assert_eq!(attempt, Some(2));
             }
@@ -2677,8 +2755,14 @@ mod tests {
             child: Box::new(inner),
         };
         let s = serde_json::to_string(&ev).unwrap();
-        assert!(!s.contains("\"parent_node_id\""), "should be omitted when None: {s}");
-        assert!(!s.contains("\"attempt\""), "should be omitted when None: {s}");
+        assert!(
+            !s.contains("\"parent_node_id\""),
+            "should be omitted when None: {s}"
+        );
+        assert!(
+            !s.contains("\"attempt\""),
+            "should be omitted when None: {s}"
+        );
     }
 
     #[test]

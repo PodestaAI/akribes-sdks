@@ -14,6 +14,7 @@ export type {
   EngineEvent,
   RegistryEvent,
   HubEvent,
+  BenchEvent,
   Project,
   Script,
   ClientInterest,
@@ -36,12 +37,6 @@ export type {
   S3CredentialsRef,
   S3DocumentRef,
   ConvertResult,
-  EvalEvent,
-  EvalSuite,
-  EvalSuiteSummary,
-  EvalRun,
-  EvalResult,
-  EvalCaseReport,
   Bench,
   BenchConfig,
   BenchStatus,
@@ -49,7 +44,8 @@ export type {
   BenchRun,
   BenchResult,
   BenchCase,
-  BenchRunEventsPage,
+  BenchById,
+  McpSessionCost,
   BenchRunTagSessionResponse,
   BenchSignatureField,
   ScriptSignature,
@@ -132,7 +128,6 @@ export type { HeartbeatStatus, ClientsClientOptions } from './sub/clients';
 export { TokensClient } from './sub/tokens';
 export type { TokenScopes, MintTokenRequest } from './sub/tokens';
 export { EventsClient } from './sub/events';
-export { EvalsClient } from './sub/evals';
 export { BenchClient } from './sub/bench';
 export { McpClient } from './sub/mcp';
 export type { McpHealth, McpDriftResult, McpRefreshResult } from './sub/mcp';

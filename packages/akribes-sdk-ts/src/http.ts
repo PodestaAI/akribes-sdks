@@ -138,6 +138,18 @@ export class HttpClient {
     return res;
   }
 
+  /** Fetch + decode the JSON body, typed as `T`. `Response.json()` is
+   *  declared to return `Promise<any>` (effectively `unknown` under our
+   *  `strict` config), so the cast lives here once instead of at every
+   *  call site. Runtime behaviour is identical to
+   *  `(await this.fetchOk(url, options)).json()`; the assertion is the
+   *  standard JSON→T boundary cast — callers keep their declared return
+   *  type accurate to the server shape. */
+  async fetchJson<T>(url: string, options?: RequestOptions): Promise<T> {
+    const res = await this.fetchOk(url, options);
+    return res.json() as Promise<T>;
+  }
+
   /** Build a project-scoped script path with proper encoding. */
   scriptPath(projectId: number, scriptName: string, ...segments: string[]): string {
     const parts = [

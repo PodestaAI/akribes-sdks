@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Span {
     pub line: usize,
     pub col: usize,
@@ -77,7 +77,7 @@ impl FieldConstraint {
 /// arm list exceeds this.
 pub const MAX_UNION_ARMS: usize = 8;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeRef {
     pub name: String,
     pub inner: Option<Box<TypeRef>>,
@@ -95,6 +95,24 @@ pub struct TypeRef {
     /// return-position-only usage in v1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variants: Option<Vec<TypeRef>>,
+    /// Source span covering the type reference's surface text. Populated
+    /// by the parser for every `TypeRef` it constructs; synthesized refs
+    /// (stdlib signatures, analyzer alias substitutions, test fixtures,
+    /// …) default to `Span::default()`.
+    ///
+    /// For composite types (`list[T]`), the OUTER `TypeRef`'s span covers
+    /// the whole `list[T]` text and the INNER `T`'s span covers just the
+    /// inner identifier. For optional sentinels (`T?`), the inner `T`'s
+    /// span is the pre-`?` text and the outer sentinel's span includes
+    /// the `?`. For variant unions (`A | B | ...`) and choice strings
+    /// (`"a" | "b"`), each arm carries its own span and the outer
+    /// sentinel spans the whole union text.
+    ///
+    /// `#[serde(default)]` so AST payloads serialized before this field
+    /// existed (older SDK clients, durable execution caches) keep
+    /// deserializing cleanly.
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Sentinel `TypeRef.name` for a discriminated union (`A | B | ...`).
@@ -110,18 +128,42 @@ impl TypeRef {
     /// Build a primitive or named type reference (no generic inner, no
     /// choice variants). Use this in preference to a struct literal so the
     /// `choices` field stays consistently `None` at non-choice sites.
+    ///
+    /// The resulting `span` is `Span::default()` — appropriate for
+    /// synthesized refs (stdlib signatures, analyzer substitutions, test
+    /// fixtures). Parser sites that have a concrete source span should
+    /// use [`TypeRef::primitive_with_span`] instead so hover /
+    /// goto-definition land on the right text range.
     pub fn primitive(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             inner: None,
             choices: None,
             variants: None,
+            span: Span::default(),
+        }
+    }
+
+    /// Build a primitive or named type reference with an explicit source
+    /// span. Parser-facing companion to [`TypeRef::primitive`].
+    pub fn primitive_with_span(name: impl Into<String>, span: Span) -> Self {
+        Self {
+            name: name.into(),
+            inner: None,
+            choices: None,
+            variants: None,
+            span,
         }
     }
 
     /// Build an optional type `T?` wrapping `inner` (D2). Idempotent:
     /// applying this to a type that is already optional returns the same
     /// shape (no double-wrap), matching most languages' `T??` collapse.
+    ///
+    /// The outer sentinel's `span` is `Span::default()` — parser sites
+    /// that have the postfix `?` location should use
+    /// [`TypeRef::optional_with_span`] so the outer sentinel covers the
+    /// whole `T?` text (the inner `T`'s span stays at its own range).
     pub fn optional(inner: TypeRef) -> Self {
         if inner.is_optional() {
             return inner;
@@ -131,6 +173,23 @@ impl TypeRef {
             inner: Some(Box::new(inner)),
             choices: None,
             variants: None,
+            span: Span::default(),
+        }
+    }
+
+    /// Build an optional type `T?` with an explicit source span covering
+    /// the whole `T?` text (inner `T`'s span is preserved). Parser-facing
+    /// companion to [`TypeRef::optional`].
+    pub fn optional_with_span(inner: TypeRef, span: Span) -> Self {
+        if inner.is_optional() {
+            return inner;
+        }
+        Self {
+            name: OPTIONAL_SENTINEL.to_string(),
+            inner: Some(Box::new(inner)),
+            choices: None,
+            variants: None,
+            span,
         }
     }
 
@@ -160,6 +219,22 @@ impl TypeRef {
             inner: None,
             choices: None,
             variants: Some(arms),
+            span: Span::default(),
+        }
+    }
+
+    /// Build a discriminated union with an explicit outer span covering
+    /// the whole `A | B | ...` text. Each arm's `TypeRef` keeps its own
+    /// span (arms come from the parser already populated). Parser-facing
+    /// companion to [`TypeRef::variant_union`].
+    pub fn variant_union_with_span(arms: Vec<TypeRef>, span: Span) -> Self {
+        debug_assert!(arms.len() >= 2, "variant union requires >= 2 arms");
+        Self {
+            name: VARIANT_UNION_SENTINEL.to_string(),
+            inner: None,
+            choices: None,
+            variants: Some(arms),
+            span,
         }
     }
 
@@ -265,4 +340,178 @@ pub enum ActorHint {
     Human,
     Any,
     Client(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Span derives `Default` — required so existing `TypeRef { … }`
+    /// struct literals across the workspace can keep building without
+    /// every test fixture having to construct one by hand.
+    #[test]
+    fn span_default_is_all_zero() {
+        let s = Span::default();
+        assert_eq!(s.line, 0);
+        assert_eq!(s.col, 0);
+        assert_eq!(s.end_line, 0);
+        assert_eq!(s.end_col, 0);
+    }
+
+    #[test]
+    fn typeref_primitive_has_default_span() {
+        let ty = TypeRef::primitive("str");
+        assert_eq!(ty.span, Span::default());
+    }
+
+    #[test]
+    fn typeref_primitive_with_span_carries_span() {
+        let s = Span {
+            line: 4,
+            col: 7,
+            end_line: 4,
+            end_col: 10,
+        };
+        let ty = TypeRef::primitive_with_span("str", s.clone());
+        assert_eq!(ty.span, s);
+    }
+
+    #[test]
+    fn typeref_serde_roundtrip_preserves_span() {
+        let s = Span {
+            line: 2,
+            col: 5,
+            end_line: 2,
+            end_col: 9,
+        };
+        let ty = TypeRef::primitive_with_span("str", s.clone());
+        let json = serde_json::to_string(&ty).unwrap();
+        let back: TypeRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "str");
+        assert_eq!(back.span, s);
+    }
+
+    /// The pre-`span` wire shape. Older SDK clients and durable execution
+    /// caches serialized TypeRefs without a `span` field, so the new
+    /// deserializer MUST accept those payloads and default-fill the
+    /// span. This is the load-bearing compatibility guarantee.
+    #[test]
+    fn typeref_deserializes_legacy_payload_without_span_field() {
+        let legacy = r#"{"name":"str","inner":null,"choices":null}"#;
+        let ty: TypeRef = serde_json::from_str(legacy).unwrap();
+        assert_eq!(ty.name, "str");
+        assert_eq!(ty.span, Span::default());
+    }
+
+    #[test]
+    fn typeref_deserializes_legacy_list_payload_without_span() {
+        let legacy =
+            r#"{"name":"list","inner":{"name":"str","inner":null,"choices":null},"choices":null}"#;
+        let ty: TypeRef = serde_json::from_str(legacy).unwrap();
+        assert_eq!(ty.name, "list");
+        assert_eq!(ty.span, Span::default());
+        let inner = ty.inner.as_deref().unwrap();
+        assert_eq!(inner.name, "str");
+        assert_eq!(inner.span, Span::default());
+    }
+
+    #[test]
+    fn typeref_deserializes_legacy_choice_payload_without_span() {
+        let legacy = r#"{"name":"choice","inner":null,"choices":["a","b"]}"#;
+        let ty: TypeRef = serde_json::from_str(legacy).unwrap();
+        assert_eq!(ty.name, "choice");
+        assert_eq!(
+            ty.choices.as_deref().unwrap(),
+            &["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(ty.span, Span::default());
+    }
+
+    /// Variant-union shapes already used `#[serde(default,
+    /// skip_serializing_if = "Option::is_none")]` for `variants`, so a
+    /// legacy payload without `variants` round-trips fine alongside a
+    /// missing `span`. Lock that in.
+    #[test]
+    fn typeref_deserializes_legacy_payload_without_variants_or_span() {
+        let legacy = r#"{"name":"str","inner":null,"choices":null}"#;
+        let ty: TypeRef = serde_json::from_str(legacy).unwrap();
+        assert_eq!(ty.name, "str");
+        assert!(ty.variants.is_none());
+        assert_eq!(ty.span, Span::default());
+    }
+
+    #[test]
+    fn typeref_variant_union_roundtrip_preserves_arm_spans() {
+        let arm_a = TypeRef::primitive_with_span(
+            "A",
+            Span {
+                line: 1,
+                col: 1,
+                end_line: 1,
+                end_col: 2,
+            },
+        );
+        let arm_b = TypeRef::primitive_with_span(
+            "B",
+            Span {
+                line: 1,
+                col: 5,
+                end_line: 1,
+                end_col: 6,
+            },
+        );
+        let outer = TypeRef::variant_union_with_span(
+            vec![arm_a, arm_b],
+            Span {
+                line: 1,
+                col: 1,
+                end_line: 1,
+                end_col: 6,
+            },
+        );
+        let json = serde_json::to_string(&outer).unwrap();
+        let back: TypeRef = serde_json::from_str(&json).unwrap();
+        assert!(back.is_variant_union());
+        let arms = back.union_arms().unwrap();
+        assert_eq!(arms[0].name, "A");
+        assert_eq!(arms[0].span.col, 1);
+        assert_eq!(arms[1].name, "B");
+        assert_eq!(arms[1].span.col, 5);
+        assert_eq!(back.span.end_col, 6);
+    }
+
+    #[test]
+    fn typeref_optional_with_span_returns_inner_if_already_optional() {
+        // Idempotent collapse with a different outer span: the second
+        // wrap is a no-op and returns the first-level optional
+        // unchanged.
+        let inner = TypeRef::primitive_with_span(
+            "int",
+            Span {
+                line: 1,
+                col: 1,
+                end_line: 1,
+                end_col: 4,
+            },
+        );
+        let first = TypeRef::optional_with_span(
+            inner,
+            Span {
+                line: 1,
+                col: 1,
+                end_line: 1,
+                end_col: 5,
+            },
+        );
+        let twice = TypeRef::optional_with_span(
+            first.clone(),
+            Span {
+                line: 9,
+                col: 9,
+                end_line: 9,
+                end_col: 9,
+            },
+        );
+        assert_eq!(twice.span, first.span);
+    }
 }

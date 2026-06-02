@@ -1,13 +1,13 @@
 [package]
 name = "akribes-sdk"
-version = "0.21.17"
+version = "0.22.0"
 edition = "2024"
 rust-version.workspace = true
 description = "Rust client SDK for the Akribes workflow server"
 license = "MIT"
 homepage = "https://akribes.ai"
 repository = "https://github.com/PodestaAI/akribes-sdks"
-documentation = "https://akribes.ai"
+documentation = "https://akribes.ai/sdks/rust/"
 readme = "README.md"
 keywords = ["akribes", "ai", "llm", "agent", "sdk"]
 categories = ["api-bindings", "asynchronous"]
@@ -20,7 +20,7 @@ name = "akribes_sdk"
 # the full `akribes-core` (parser, analyzer, compiler, engine, providers);
 # extracting the wire envelope into its own crate (#TBD) means the SDK
 # now compiles without pulling any of those in.
-akribes-types = { path = "../akribes-types", version = "0.21.16" }
+akribes-types = { path = "../akribes-types", version = "0.22.0" }
 tracing = { workspace = true }
 reqwest = { workspace = true, features = ["stream", "multipart"] }
 serde = { workspace = true }
@@ -40,3 +40,6 @@ default = []
 
 [dev-dependencies]
 mockito = "1.6.1"
+
+[lints]
+workspace = true

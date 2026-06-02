@@ -4,7 +4,6 @@ pub mod clients;
 pub mod convert;
 pub mod documents;
 pub mod drafts;
-pub mod evals;
 pub mod events;
 pub mod executions;
 pub mod mcp;

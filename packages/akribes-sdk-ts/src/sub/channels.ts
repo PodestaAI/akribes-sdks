@@ -12,14 +12,14 @@ export class ChannelsClient {
   }
 
   async list(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptChannel[]> {
-    return (await this.http.fetchOk(this.path(scriptName, 'channels'), opts)).json();
+    return this.http.fetchJson<ScriptChannel[]>(this.path(scriptName, 'channels'), opts);
   }
 
   async create(scriptName: string, channelName: string, opts?: { signal?: AbortSignal }): Promise<ScriptChannel> {
-    return (await this.http.fetchOk(this.path(scriptName, 'channels'), {
+    return this.http.fetchJson<ScriptChannel>(this.path(scriptName, 'channels'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: channelName }), signal: opts?.signal,
-    })).json();
+    });
   }
 
   async delete(scriptName: string, channelName: string, opts?: { signal?: AbortSignal }): Promise<void> {

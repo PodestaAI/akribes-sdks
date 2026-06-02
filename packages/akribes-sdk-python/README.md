@@ -186,8 +186,9 @@ See `examples/` for runnable end-to-end demos.
 
 Upgrading from v0.20.x? See [MIGRATION-0.21.md](./MIGRATION-0.21.md).
 
+- SDK guide: <https://akribes.ai/sdks/python/>
+- Language guide: <https://akribes.ai/language/overview/>
 - Source mirror: <https://github.com/PodestaAI/akribes-sdks>
-- Language guide: <https://akribes.ai/docs>
 - Issues: <https://github.com/PodestaAI/akribes-sdks/issues>
 
 ## License

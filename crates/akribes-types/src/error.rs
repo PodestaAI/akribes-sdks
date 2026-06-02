@@ -214,9 +214,7 @@ impl ErrorKind {
             | ErrorKind::BadGateway502
             | ErrorKind::ServiceUnavailable503
             | ErrorKind::GatewayTimeout504
-            | ErrorKind::NetworkError => {
-                SuggestedAction::Retry
-            }
+            | ErrorKind::NetworkError => SuggestedAction::Retry,
             ErrorKind::AuthError => SuggestedAction::FixConfig,
             ErrorKind::TokenLimit => SuggestedAction::FixInput,
             ErrorKind::Timeout => SuggestedAction::FixInput,
@@ -432,11 +430,11 @@ impl ErrorCode {
         }
         // HTTP-date branch (#1058).
         let date_slice = after
-            .split(|c: char| c == '\n' || c == '\r')
+            .split(['\n', '\r'])
             .next()
             .unwrap_or(after)
             .trim()
-            .trim_end_matches(|c: char| matches!(c, ',' | ';' | '.'));
+            .trim_end_matches([',', ';', '.']);
         if date_slice.is_empty() {
             return None;
         }
@@ -514,7 +512,9 @@ impl ErrorCode {
             ErrorCode::ProviderServer => "AKRIBES-E-PROVIDER-SERVER",
             ErrorCode::ProviderServer500 => "AKRIBES-E-PROVIDER-SERVER-500",
             ErrorCode::ProviderBadGateway502 => "AKRIBES-E-PROVIDER-BAD-GATEWAY-502",
-            ErrorCode::ProviderServiceUnavailable503 => "AKRIBES-E-PROVIDER-SERVICE-UNAVAILABLE-503",
+            ErrorCode::ProviderServiceUnavailable503 => {
+                "AKRIBES-E-PROVIDER-SERVICE-UNAVAILABLE-503"
+            }
             ErrorCode::ProviderGatewayTimeout504 => "AKRIBES-E-PROVIDER-GATEWAY-TIMEOUT-504",
             ErrorCode::ProviderNetwork => "AKRIBES-E-PROVIDER-NETWORK",
             ErrorCode::ProviderParse => "AKRIBES-E-PROVIDER-PARSE",
@@ -567,7 +567,9 @@ impl ErrorCode {
             "AKRIBES-E-PROVIDER-SERVER" => ErrorCode::ProviderServer,
             "AKRIBES-E-PROVIDER-SERVER-500" => ErrorCode::ProviderServer500,
             "AKRIBES-E-PROVIDER-BAD-GATEWAY-502" => ErrorCode::ProviderBadGateway502,
-            "AKRIBES-E-PROVIDER-SERVICE-UNAVAILABLE-503" => ErrorCode::ProviderServiceUnavailable503,
+            "AKRIBES-E-PROVIDER-SERVICE-UNAVAILABLE-503" => {
+                ErrorCode::ProviderServiceUnavailable503
+            }
             "AKRIBES-E-PROVIDER-GATEWAY-TIMEOUT-504" => ErrorCode::ProviderGatewayTimeout504,
             "AKRIBES-E-PROVIDER-NETWORK" => ErrorCode::ProviderNetwork,
             "AKRIBES-E-PROVIDER-PARSE" => ErrorCode::ProviderParse,
@@ -626,9 +628,7 @@ impl ErrorCode {
     /// developer message.
     pub fn default_user_message(&self) -> &'static str {
         match self {
-            ErrorCode::UserCancelled => {
-                "The execution was cancelled."
-            }
+            ErrorCode::UserCancelled => "The execution was cancelled.",
             ErrorCode::ExecutionTimeout => {
                 "The workflow ran past its time budget. Try a smaller input, simplify the workflow, or raise AKRIBES_EXECUTION_TIMEOUT."
             }
@@ -665,9 +665,7 @@ impl ErrorCode {
             ErrorCode::ProviderParse => {
                 "The model produced output that didn't fit the declared schema. Check the prompt and the type definition."
             }
-            ErrorCode::ProviderOther => {
-                "The model provider failed with an unclassified error."
-            }
+            ErrorCode::ProviderOther => "The model provider failed with an unclassified error.",
             ErrorCode::InternalPanic => {
                 "An internal Akribes task crashed (AKRIBES-E-INTERNAL-PANIC). \
                  This is a bug. Report with the execution id at \
@@ -753,18 +751,14 @@ impl ErrorCode {
             ErrorCode::StdFormatSyntax => {
                 "`std.format` template has malformed brace syntax. Use `{name}` for placeholders, `{{` / `}}` for literal braces."
             }
-            ErrorCode::StdJsonParse => {
-                "`std.json_parse` could not parse the input as JSON."
-            }
+            ErrorCode::StdJsonParse => "`std.json_parse` could not parse the input as JSON.",
             ErrorCode::StdJsonStringify => {
                 "`std.json_stringify` could not serialise the value. Check for control-plane values (FatalError) and non-JSON shapes."
             }
             ErrorCode::StdRegexInvalid => {
                 "`std.regex_extract` was given an invalid regex pattern. Check the syntax against the Rust `regex` crate's rules."
             }
-            ErrorCode::Other => {
-                "An error occurred. See the developer message for detail."
-            }
+            ErrorCode::Other => "An error occurred. See the developer message for detail.",
         }
     }
 }

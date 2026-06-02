@@ -98,7 +98,7 @@ export class ExecutionsClient {
     this.validateContract(scriptName);
     const channel = opts?.channel ?? 'production';
     const url = `${this.path(scriptName, 'run')}?channel=${encodeURIComponent(channel)}`;
-    return (await this.http.fetchOk(url, {
+    return this.http.fetchJson<RunResult>(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         inputs: opts?.inputs,
@@ -107,7 +107,7 @@ export class ExecutionsClient {
         dry_run_tools: opts?.dryRunTools,
       }),
       signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** Run a script with files uploaded via multipart form data. */
@@ -125,7 +125,7 @@ export class ExecutionsClient {
     if (opts?.triggeredBy ?? this.defaultTriggeredBy) {
       form.append('_meta', JSON.stringify({ triggered_by: opts?.triggeredBy ?? this.defaultTriggeredBy }));
     }
-    return (await this.http.fetchOk(url, { method: 'POST', body: form, signal: opts?.signal })).json();
+    return this.http.fetchJson<RunResult>(url, { method: 'POST', body: form, signal: opts?.signal });
   }
 
   /** Run a script with documents referenced from S3. */
@@ -135,7 +135,7 @@ export class ExecutionsClient {
     opts?: { channel?: string; triggeredBy?: string; signal?: AbortSignal },
   ): Promise<RunResult> {
     const url = this.path(scriptName, 'run', 's3');
-    return (await this.http.fetchOk(url, {
+    return this.http.fetchJson<RunResult>(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -144,18 +144,18 @@ export class ExecutionsClient {
         triggered_by: opts?.triggeredBy ?? this.defaultTriggeredBy,
       }),
       signal: opts?.signal,
-    })).json();
+    });
   }
 
   async get(executionId: string, opts?: { signal?: AbortSignal }): Promise<ExecutionStatus | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(`${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}`, opts)).json()
+      this.http.fetchJson<ExecutionStatus>(`${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}`, opts)
     );
   }
 
   async getOutput(executionId: string, opts?: { signal?: AbortSignal }): Promise<ExecutionOutput | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(`${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}/output`, opts)).json()
+      this.http.fetchJson<ExecutionOutput>(`${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}/output`, opts)
     );
   }
 
@@ -166,7 +166,7 @@ export class ExecutionsClient {
     const qs = params.toString();
     const url = `${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}/events${qs ? `?${qs}` : ''}`;
     return nullOn404(async () =>
-      (await this.http.fetchOk(url, { signal: opts?.signal })).json()
+      this.http.fetchJson<ExecutionEvents>(url, { signal: opts?.signal })
     );
   }
 
@@ -181,17 +181,17 @@ export class ExecutionsClient {
     if (options?.offset != null) params.set('offset', String(options.offset));
     const qs = params.toString();
     const url = `${this.path(scriptName, 'executions')}${qs ? '?' + qs : ''}`;
-    return (await this.http.fetchOk(url, { signal: options?.signal })).json();
+    return this.http.fetchJson<ExecutionStatus[]>(url, { signal: options?.signal });
   }
 
   /** List child executions spawned by this execution via the engine's
    *  spawn_child_execution callback. Returns an empty array when no children
    *  exist (the common case for v1 where parent linkage isn't yet wired). */
   async children(executionId: string, opts?: { signal?: AbortSignal }): Promise<ExecutionChildSummary[]> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ExecutionChildSummary[]>(
       `${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}/children`,
       opts,
-    )).json();
+    );
   }
 
   /** Per-task cost / token / duration breakdown for an execution. Reads from
@@ -199,10 +199,10 @@ export class ExecutionsClient {
    *  for monolith workflows where there are no spawned children — every
    *  agent invocation lives in `execution_tasks` keyed by `task_name`. */
   async tasks(executionId: string, opts?: { signal?: AbortSignal }): Promise<ExecutionTasksResponse> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ExecutionTasksResponse>(
       `${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}/tasks`,
       opts,
-    )).json();
+    );
   }
 
   async cancel(executionId: string, opts?: { signal?: AbortSignal }): Promise<void> {
@@ -345,7 +345,7 @@ export class ExecutionsClient {
   ): Promise<RunResult> {
     const channel = opts.channel ?? 'draft';
     const url = `${this.path(scriptName, 'run', 'from')}?channel=${encodeURIComponent(channel)}`;
-    return (await this.http.fetchOk(url, {
+    return this.http.fetchJson<RunResult>(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -355,7 +355,7 @@ export class ExecutionsClient {
         triggered_by: opts.triggeredBy ?? this.defaultTriggeredBy,
       }),
       signal: opts.signal,
-    })).json();
+    });
   }
 
   /** Get the compiled execution DAG for a script. If versionId is omitted, uses the draft. */
@@ -363,7 +363,7 @@ export class ExecutionsClient {
     const params = new URLSearchParams();
     if (opts?.versionId != null) params.set('version', String(opts.versionId));
     const qs = params.toString();
-    return (await this.http.fetchOk(`${this.path(scriptName, 'graph')}${qs ? `?${qs}` : ''}`, { signal: opts?.signal })).json();
+    return this.http.fetchJson<ScriptGraph>(`${this.path(scriptName, 'graph')}${qs ? `?${qs}` : ''}`, { signal: opts?.signal });
   }
 
   /** Get cost aggregation for the entire project, optionally filtered by date range.
@@ -376,10 +376,10 @@ export class ExecutionsClient {
     if (opts?.since) params.set('since', opts.since);
     if (opts?.until) params.set('until', opts.until);
     const qs = params.toString();
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ProjectCost>(
       `${this.http.getBaseUrl()}/projects/${this.projectId}/cost${qs ? `?${qs}` : ''}`,
       { signal: opts?.signal },
-    )).json();
+    );
   }
 
   /** Get cost aggregation for a script (total, avg, per-version, per-channel). */
@@ -391,10 +391,10 @@ export class ExecutionsClient {
     if (opts?.since) params.set('since', opts.since);
     if (opts?.until) params.set('until', opts.until);
     const qs = params.toString();
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ScriptCost>(
       `${this.path(scriptName, 'cost')}${qs ? `?${qs}` : ''}`,
       { signal: opts?.signal },
-    )).json();
+    );
   }
 
   /** Run a script and wait for the result. Returns [execution_id, output]. */
@@ -447,15 +447,19 @@ export class ExecutionsClient {
     created_at: string;
   } | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(`${this.http.getBaseUrl()}/documents/${encodeURIComponent(documentId)}`, opts)).json()
+      this.http.fetchJson<{
+        id: string; filename: string; content_type: string; size_bytes: number;
+        content_hash: string; conversion_status: string; conversion_error: string | null;
+        created_at: string;
+      }>(`${this.http.getBaseUrl()}/documents/${encodeURIComponent(documentId)}`, opts)
     );
   }
 
   /** Get converted markdown for a document. */
   async getDocumentMarkdown(documentId: string, opts?: { signal?: AbortSignal }): Promise<{ markdown: string }> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<{ markdown: string }>(
       `${this.http.getBaseUrl()}/documents/${encodeURIComponent(documentId)}/markdown`, opts,
-    )).json();
+    );
   }
 
   /** Get a presigned download URL for the original document file. */
@@ -469,9 +473,9 @@ export class ExecutionsClient {
 
   /** Retry conversion on a failed document. */
   async reconvertDocument(documentId: string, opts?: { signal?: AbortSignal }): Promise<{ status: string }> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<{ status: string }>(
       `${this.http.getBaseUrl()}/documents/${encodeURIComponent(documentId)}/convert`,
       { method: 'POST', signal: opts?.signal },
-    )).json();
+    );
   }
 }

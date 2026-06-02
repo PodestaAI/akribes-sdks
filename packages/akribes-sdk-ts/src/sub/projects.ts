@@ -11,27 +11,27 @@ export class ProjectsClient {
   }
 
   async list(opts?: { signal?: AbortSignal }): Promise<Project[]> {
-    return (await this.http.fetchOk(this.base, opts)).json();
+    return this.http.fetchJson<Project[]>(this.base, opts);
   }
 
   async create(name: string, opts?: { signal?: AbortSignal }): Promise<Project> {
-    return (await this.http.fetchOk(this.base, {
+    return this.http.fetchJson<Project>(this.base, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }), signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** Fetch a project by numeric id or name. The server resolves either,
    *  so callers holding only a URL slug don't need a name→id round-trip. */
   async get(id: number | string, opts?: { signal?: AbortSignal }): Promise<Project> {
-    return (await this.http.fetchOk(`${this.base}/${encodeURIComponent(String(id))}`, opts)).json();
+    return this.http.fetchJson<Project>(`${this.base}/${encodeURIComponent(String(id))}`, opts);
   }
 
   async update(id: number, name: string, opts?: { signal?: AbortSignal }): Promise<Project> {
-    return (await this.http.fetchOk(`${this.base}/${id}`, {
+    return this.http.fetchJson<Project>(`${this.base}/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }), signal: opts?.signal,
-    })).json();
+    });
   }
 
   async delete(id: number, opts?: { signal?: AbortSignal }): Promise<void> {
@@ -41,12 +41,12 @@ export class ProjectsClient {
   /** List scripts for a specific project (cross-project, no bound projectId required).
    *  Accepts a numeric id or a name — the server resolves either. */
   async listScripts(projectId: number | string, opts?: { signal?: AbortSignal }): Promise<Script[]> {
-    return (await this.http.fetchOk(`${this.base}/${encodeURIComponent(String(projectId))}/scripts`, opts)).json();
+    return this.http.fetchJson<Script[]>(`${this.base}/${encodeURIComponent(String(projectId))}/scripts`, opts);
   }
 
   /** List channels for a script in a specific project (cross-project). */
   async listChannels(projectId: number, scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptChannel[]> {
-    return (await this.http.fetchOk(`${this.scriptPath(projectId, scriptName, 'channels')}`, opts)).json();
+    return this.http.fetchJson<ScriptChannel[]>(`${this.scriptPath(projectId, scriptName, 'channels')}`, opts);
   }
 
   /** Delete a script in a specific project (cross-project). */
@@ -64,16 +64,16 @@ export class ProjectsClient {
 
   /** Duplicate a script within the same project. Copies versions, channels, and draft — not executions. */
   async duplicateScript(projectId: number, scriptName: string, opts?: { signal?: AbortSignal }): Promise<Script> {
-    return (await this.http.fetchOk(`${this.scriptPath(projectId, scriptName, 'duplicate')}`, {
+    return this.http.fetchJson<Script>(`${this.scriptPath(projectId, scriptName, 'duplicate')}`, {
       method: 'POST', signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** Duplicate an entire project with all its scripts. */
   async duplicate(id: number, opts?: { signal?: AbortSignal }): Promise<Project> {
-    return (await this.http.fetchOk(`${this.base}/${id}/duplicate`, {
+    return this.http.fetchJson<Project>(`${this.base}/${id}/duplicate`, {
       method: 'POST', signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** Reorder projects. Pass an array of project IDs in the desired order. */
@@ -94,10 +94,10 @@ export class ProjectsClient {
 
   /** Move a script from one project to another. Returns the updated script. */
   async moveScript(projectId: number, scriptName: string, targetProjectId: number, opts?: { signal?: AbortSignal }): Promise<Script> {
-    return (await this.http.fetchOk(`${this.scriptPath(projectId, scriptName, 'move')}`, {
+    return this.http.fetchJson<Script>(`${this.scriptPath(projectId, scriptName, 'move')}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target_project_id: targetProjectId }), signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** Get cost aggregation for an arbitrary project (the project the client was
@@ -110,9 +110,9 @@ export class ProjectsClient {
     if (opts?.since) params.set('since', opts.since);
     if (opts?.until) params.set('until', opts.until);
     const qs = params.toString();
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ProjectCost>(
       `${this.base}/${projectId}/cost${qs ? `?${qs}` : ''}`,
       { signal: opts?.signal },
-    )).json();
+    );
   }
 }

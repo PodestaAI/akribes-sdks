@@ -86,7 +86,7 @@ class ProjectResource(Resource):
 
     Inherits ``_base_url`` and ``_request`` from :class:`Resource` so the
     global-URL methods on mixed resources (e.g. ``executions.get``,
-    ``evals.cancel``) keep working unchanged.
+    ``bench_runs.cancel``) keep working unchanged.
     """
 
     _api: _ProjectApiClient  # type: ignore[assignment]

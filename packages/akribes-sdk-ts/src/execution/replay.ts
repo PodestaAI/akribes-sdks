@@ -69,9 +69,12 @@ export function createReplayController(events: EngineEvent[]): ReplayController 
     const activeNodeRef: ActiveNodeRef = { current: null };
 
     for (let i = 0; i < clamped; i++) {
+      // `i < clamped <= events.length` so the element is always present;
+      // the cast satisfies `noUncheckedIndexedAccess` without a runtime guard.
+      const event = events[i] as EngineEvent;
       const hubEvt: HubEvent = {
         type: 'Execution',
-        payload: { project_id: 0, script_name: '', execution_id: '', event: events[i] },
+        payload: { project_id: 0, script_name: '', execution_id: '', event },
       };
       const result = reduceExecutionEvent(steps, hubEvt, activeLineRef, activeNodeRef);
       steps = result.steps;

@@ -119,7 +119,7 @@ query strings and would leak the token. The server stamps
 `X-Token-Source: query-param` on responses to query-string requests
 so operators can chart adoption away from the query fallback.
 
-See <https://akribes.ai/docs/authentication> for the full model.
+See <https://akribes.ai/deployment/authentication/> for the full model.
 
 ## Crate layout
 
@@ -130,9 +130,9 @@ See <https://akribes.ai/docs/authentication> for the full model.
 
 ## Links
 
-- Crate docs: <https://docs.rs/akribes-sdk>
+- SDK guide: <https://akribes.ai/sdks/rust/>
+- Language guide: <https://akribes.ai/language/overview/>
 - Source mirror: <https://github.com/PodestaAI/akribes-sdks>
-- Language guide: <https://akribes.ai/docs>
 
 ## License
 

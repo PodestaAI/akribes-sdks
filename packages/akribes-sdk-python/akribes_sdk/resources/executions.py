@@ -22,28 +22,25 @@ from akribes_sdk._parsers import (
     parse_execution_events,
     parse_execution_output,
     parse_execution_status,
+    parse_execution_tasks,
     parse_graph_edge,
     parse_graph_node,
     parse_project_cost,
     parse_run_result,
 )
 from akribes_sdk.models import (
-    CostAggregation,
     DocumentMeta,
-    EngineEvent,
     ErrorKind,
     ExecutionChildSummary,
     ExecutionEvents,
     ExecutionOutput,
     ExecutionStatus,
     ExecutionStatusValue,
-    GraphEdge,
-    GraphNode,
+    ExecutionTasksResponse,
     GraphResponse,
     ProjectCost,
     ReconvertResult,
     RunResult,
-    S3DocumentRef,
     S3PresignedRef,
     S3CredentialsRef,
     ScriptCost,
@@ -226,6 +223,20 @@ class ExecutionsByID(Resource):
         except NotFoundError:
             return []
         return [ExecutionChildSummary(**c) for c in res.json()]
+
+    async def tasks(self, execution_id: str) -> ExecutionTasksResponse:
+        """Per-task cost / token / duration breakdown for an execution
+        (``GET /executions/{id}/tasks``).
+
+        Reads from the ``execution_tasks`` table, populated as ``TaskEnd``
+        events arrive — one row per ``task_name``. Useful for monolith
+        workflows with no spawned children, where every agent invocation
+        lives in ``execution_tasks``. Mirrors TS ``executions.tasks``."""
+        res = await self._request(
+            "GET",
+            f"{self._base_url}/executions/{execution_id}/tasks",
+        )
+        return parse_execution_tasks(res.json())
 
 
 class Executions(ProjectResource):

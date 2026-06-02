@@ -13,6 +13,28 @@ class ClientsByID(Resource):
     async def delete(self, client_id: str) -> None:
         await self._request("DELETE", f"{self._base_url}/clients/{client_id}")
 
+    def list_locks_for(self, project_id: int, script_name: str) -> AsyncPage[ContractLockInfo]:
+        """List contract locks for a script in *any* project (cross-project).
+
+        The project-scoped :meth:`ClientsProjectScoped.list_locks` only sees the
+        bound project's locks; this variant takes an explicit ``project_id`` so a
+        service-token caller can audit locks across projects without spinning up
+        a per-project handle. Hits ``GET /projects/{pid}/scripts/{name}/locks`` —
+        the same route, addressed cross-project. Mirrors TS ``listLocksFor``.
+        """
+        base = f"{self._base_url}/projects/{project_id}/scripts/{quote(script_name, safe='')}/locks"
+
+        async def fetch(offset: int, limit: int) -> tuple[list[ContractLockInfo], bool]:
+            res = await self._request(
+                "GET",
+                base,
+                params={"limit": limit, "offset": offset},
+            )
+            items = [ContractLockInfo(**row) for row in res.json()]
+            return items, len(items) == limit
+
+        return AsyncPage(fetch)
+
 
 class ClientsProjectScoped(ProjectResource):
     """Project-scoped client ops. Mounted on ProjectHandle.clients."""

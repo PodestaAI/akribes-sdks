@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.10"
 
 [[package]]
-name = "akribes-sdk"
-version = "0.21.13"
+name = "akribes"
+version = "0.21.17"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

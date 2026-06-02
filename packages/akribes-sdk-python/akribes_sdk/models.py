@@ -371,6 +371,31 @@ class ExecutionChildSummary(_Model):
     script_name: str
 
 
+class ExecutionTaskSummary(_Model):
+    """Per-task cost / token / duration breakdown row from
+    ``GET /executions/{id}/tasks``. One row per ``execution_tasks`` entry,
+    populated as ``TaskEnd`` events arrive. Mirrors TS
+    ``ExecutionTaskSummary`` and the ``get_execution_tasks`` server handler."""
+    task_name: str
+    model: str | None = None
+    provider: str | None = None
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    cache_write_input_tokens: int
+    cost_usd: float | None = None
+    duration_ms: int | None = None
+    attempt: int
+    finished_at: str
+
+
+class ExecutionTasksResponse(_Model):
+    """Envelope returned by ``GET /executions/{id}/tasks``. Mirrors TS
+    ``ExecutionTasksResponse``."""
+    execution_id: str
+    tasks: list[ExecutionTaskSummary]
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Engine events
 # ────────────────────────────────────────────────────────────────────────
@@ -1014,6 +1039,36 @@ class HubEvent:
     payload: dict[str, Any]
 
 
+BenchEventType = Literal["RunStarted", "ResultRecorded", "RunFinished"]
+"""Discriminator for a :class:`BenchEvent`, mirroring the server's
+``BenchEvent`` variants."""
+
+
+@dataclass(frozen=True, slots=True)
+class BenchEvent:
+    """A live bench-run lifecycle event, carried inside a ``HubEvent`` of
+    ``type == "Bench"`` (``hub_event.payload`` is the wire ``BenchEvent``).
+
+    Mirrors the server's ``BenchEvent`` enum
+    (``crates/akribes-server/src/models.rs``), which is adjacently tagged
+    (``{"type": ..., "payload": {...}}``) with three variants:
+
+    * ``RunStarted`` / ``RunFinished`` carry a :class:`BenchRun` in ``run``.
+    * ``ResultRecorded`` carries ``run_id`` plus a :class:`BenchResult`
+      in ``result``.
+
+    ``run`` and ``result`` reuse the existing row models; only the field that
+    belongs to the active variant is populated (the others stay ``None``).
+    """
+
+    type: BenchEventType
+    project_id: int
+    script_name: str
+    run: BenchRun | None = None
+    run_id: int | None = None
+    result: BenchResult | None = None
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Clients
 # ────────────────────────────────────────────────────────────────────────
@@ -1212,68 +1267,195 @@ GraphResponse = ScriptGraph
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Evals
+# Bench (akribes-native eval substrate)
 # ────────────────────────────────────────────────────────────────────────
+#
+# Mirrors the wire shapes the akribes-server bench handlers emit
+# (`crates/akribes-server/src/handlers/bench.rs` + `models.rs`) and the
+# Rust/TS SDK bench clients (`crates/akribes-sdk/src/sub/bench.rs`,
+# `packages/akribes-sdk-ts/src/sub/bench.ts`). RFC-3339 timestamps cross
+# the wire as strings; we keep them as `str` to match the eval/execution
+# convention elsewhere in this module rather than coercing to `datetime`.
 
 
 @dataclass(frozen=True, slots=True)
-class EvalSuite:
-    id: int
-    script_id: int
-    name: str
-    runner_url: str
-    config: dict[str, Any]
-    created_at: str
-    auto_run_channels: list[str] = field(default_factory=list)
+class Bench:
+    """Per-script bench configuration. One row per ``scripts.id``.
 
-
-@dataclass(frozen=True, slots=True)
-class EvalRun:
-    id: int
-    suite_id: int
-    script_id: int
-    source_hash: str
-    status: str
-    completed_cases: int
-    started_at: str
-    version_id: int | None = None
-    channel: str | None = None
-    total_cases: int | None = None
-    average_score: float | None = None
-    runner_run_id: str | None = None
-    detail_url: str | None = None
-    triggered_by: str | None = None
-    finished_at: str | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class EvalResult:
-    id: int
-    run_id: int
-    case_id: str
-    status: str
-    score: float | None = None
-    metadata: dict[str, Any] | None = None
-    execution_id: str | None = None
-    created_at: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class EvalSuiteSummary:
-    """One row per eval suite for the project-level cross-script dashboard.
-
-    See sub-spec 1a — `GET /projects/{id}/eval-suite-summaries`.
+    ``judge_script_id`` is nullable while the bench is still being authored.
+    Returned by ``GET/POST /projects/{id}/scripts/{name}/bench``.
     """
 
-    suite_id: int
+    id: int
+    script_id: int
+    judge_channel: str
+    config: dict[str, Any]
+    created_at: str
+    updated_at: str
+    judge_script_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectBenchSummary:
+    """Aggregated per-bench summary for the project evals landing page.
+
+    Returned by ``GET /projects/{id}/benches``.
+    """
+
+    bench_id: int
     script_id: int
     script_name: str
-    suite_name: str
+    judge_channel: str
+    case_count: int
+    updated_at: str
+    judge_script_id: int | None = None
+    judge_script_name: str | None = None
     latest_run_id: int | None = None
+    latest_run_status: str | None = None
+    latest_run_channel: str | None = None
+    latest_run_workflow_version_id: int | None = None
     latest_run_at: str | None = None
-    latest_avg_score: float | None = None
-    prior_avg_score: float | None = None
+    latest_run_mean_score: float | None = None
+    latest_run_cost_usd: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BenchRun:
+    """A single bench-run row. ``workflow_version_id`` and ``judge_version_id``
+    are resolved at trigger time so a later channel publish doesn't change what
+    this run represents. Returned by the trigger / list / get run endpoints."""
+
+    id: int
+    bench_id: int
+    channel: str
+    workflow_version_id: int
+    judge_version_id: int
+    status: str
+    triggered_at: str
+    triggered_by: str | None = None
+    completed_at: str | None = None
+    total_cost_usd: float = 0.0
+    total_cases: int = 0
+    cache_hit_cases: int = 0
+    notes: str | None = None
+    mcp_session_id: str | None = None
+    case_filter: list[str] | None = None
+    mean_headline_score: float | None = None
+    ok_cases: int | None = None
+    status_breakdown: dict[str, int] | None = None
+    judge_script_name: str | None = None
+    # Pre-flight warnings ("OPENAI_API_KEY missing; …"); only populated on the
+    # trigger response, omitted on list/get reads.
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class BenchResult:
+    """One per-case score row for a bench run. Returned by
+    ``GET /bench-runs/{id}/results`` (which additionally carries the typed
+    ``workflow_output`` + ``error``) and emitted per-case over the SSE stream."""
+
+    id: int
+    bench_run_id: int
+    case_id: str
+    status: str
+    created_at: str
+    workflow_execution_id: str | None = None
+    judge_execution_id: str | None = None
+    score: Any | None = None
+    headline_score: float | None = None
+    cost_usd: float = 0.0
+    duration_ms: int | None = None
+    cache_hit: bool = False
+    input_hash: str | None = None
+    error: str | None = None
+    # Parsed ``WorkflowEnd`` payload from the workflow execution. ``None`` when
+    # the workflow failed/cancelled or this is a cache-hit row. Only the
+    # ``/results`` read path populates this; SSE ``result`` events omit it.
+    workflow_output: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BenchCase:
+    """Server-side projection of an ``executions`` row with ``kind='case'``.
+
+    Returned by the case CRUD + promote endpoints."""
+
+    id: str
+    project_id: int
+    script_name: str
+    kind: str
+    frozen: bool
+    created_at: str
+    bench_id: int | None = None
+    case_name: str | None = None
+    inputs: Any | None = None
+    expected_output: Any | None = None
+    ground_truth: Any | None = None
+    input_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompareCase:
+    """Per-case score delta from ``GET /bench-runs/{a}/compare/{b}``."""
+
+    case_id: str
+    case_label: str
+    flag: str  # improved | regressed | unchanged | missing_a | missing_b
+    score_a: float | None = None
+    score_b: float | None = None
+    delta: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompareAggregate:
+    mean_score_delta: float
+    cost_delta_usd: float
+    n_regressed: int
+    n_improved: int
+    n_unchanged: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompareReport:
+    """Returned by ``GET /bench-runs/{a}/compare/{b}``."""
+
+    run_a_id: int
+    run_b_id: int
+    aggregate: CompareAggregate
+    per_case: list[CompareCase] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class DriftedCase:
+    """One drifted case from the cases contract-drift report."""
+
+    case_id: str
+    label: str
+    what_broke: str
+
+
+@dataclass(frozen=True, slots=True)
+class DriftReport:
+    """Returned by
+    ``GET /projects/{id}/scripts/{name}/bench/cases/contract-drift``.
+
+    ``drifted`` empty ⇒ no drift (clients hide the banner)."""
+
+    drifted: list[DriftedCase] = field(default_factory=list)
+    script_version_id: int | None = None
+    published_at: str | None = None
+    published_by: str | None = None
+    summary: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class BenchRunTagSessionResponse:
+    """Receipt returned by ``PATCH /bench-runs/{id}/tag-session``."""
+
+    tagged: bool
+    run_id: int
+    mcp_session_id: str
 
 
 # ────────────────────────────────────────────────────────────────────────

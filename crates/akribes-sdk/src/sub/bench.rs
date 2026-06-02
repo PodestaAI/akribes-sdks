@@ -1,8 +1,8 @@
 //! Sub-client for the akribes-server bench substrate.
 //!
 //! Wraps the per-script bench config CRUD, case CRUD + promote-from-execution,
-//! and the bench-run lifecycle (trigger / list / get / results / events / cancel
-//! / delete / compare / tag-session). Two surfaces:
+//! and the bench-run lifecycle (trigger / list / get / results /
+//! subscribe-events / cancel / delete / compare / tag-session). Two surfaces:
 //!
 //! - Project-scoped operations live on [`BenchClient`] (obtained via
 //!   `client.project(id).bench()`). They take a script name + project_id
@@ -17,10 +17,12 @@
 use std::sync::Arc;
 
 use serde::Serialize;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::client::{AkribesClient, Inner};
-use crate::error::Result;
+use crate::error::{AkribesError, Result};
 use crate::models::*;
+use crate::sub::events::{EventSubscription, stream_bench_run_events};
 
 // ── Project-scoped bench client ──────────────────────────────────────────────
 
@@ -50,6 +52,22 @@ impl BenchClient {
             self.project_id,
             urlencoding::encode(script_name),
         )
+    }
+
+    // ── Project-wide summary ────────────────────────────────────────────────
+
+    /// `GET /projects/{id}/benches` — one [`ProjectBenchSummary`] per
+    /// configured bench in the project. Each row joins the bench with its
+    /// script name, judge name (when set), total case count, and the
+    /// most-recent run's identity + mean headline score. Backs the
+    /// project-level evals landing page; mirrors the TS SDK's
+    /// `listProjectSummaries`. 404 → empty list.
+    pub async fn list_project_summaries(&self) -> Result<Vec<ProjectBenchSummary>> {
+        let url = format!(
+            "{}/projects/{}/benches",
+            self.inner.base_url, self.project_id
+        );
+        self.c().get_list(&url).await
     }
 
     // ── Bench config CRUD ───────────────────────────────────────────────────
@@ -239,23 +257,73 @@ impl BenchRunsClient {
         self.c().get_list(&url).await
     }
 
-    /// `GET /bench-runs/{id}/events?after_id=N` — poll-style page of bench
-    /// events. The server's primary surface for run events is SSE
-    /// (`/bench-runs/{id}/events`), but the MCP family pulls a JSON page
-    /// shape via the same path; we expose the JSON form here.
-    pub async fn events(&self, run_id: i64, after_id: Option<i64>) -> Result<BenchRunEventsPage> {
-        #[derive(Serialize)]
-        struct Q {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            after_id: Option<i64>,
+    /// Subscribe to a bench run's **live** result stream over SSE
+    /// (`GET /bench-runs/{id}/events`, `Accept: text/event-stream`).
+    ///
+    /// Returns a receiver of typed [`BenchRunEvent`]s plus an
+    /// [`EventSubscription`] handle that cancels the background listener
+    /// on drop. The server emits a [`BenchRunEvent::Result`] per recorded
+    /// case, a [`BenchRunEvent::Lagged`] if the broadcast subscriber falls
+    /// behind, and a final [`BenchRunEvent::Terminal`] carrying the run's
+    /// terminal status — after which the channel closes.
+    ///
+    /// This awaits the SSE subscription being live on the server before
+    /// returning, so a non-2xx (e.g. 403 on a project the token can't
+    /// read, or the run id not resolving to a project) surfaces here
+    /// rather than as a silently-empty stream. Reuses the crate's shared
+    /// SSE byte-deframer and field parser (the same machinery behind
+    /// `events().event_stream` / `executions().run_stream`).
+    ///
+    /// Mirrors the TS SDK's `subscribeRunEvents`; the `terminal` frame is
+    /// surfaced as a typed variant so Rust callers can detect
+    /// end-of-stream without a side channel. Drop the returned
+    /// `EventSubscription` (or let it fall out of scope) to unsubscribe.
+    ///
+    /// ```no_run
+    /// # use akribes_sdk::AkribesClient;
+    /// # use akribes_sdk::models::BenchRunEvent;
+    /// # async fn example(client: AkribesClient) -> akribes_sdk::Result<()> {
+    /// let (mut rx, _sub) = client.bench_runs().subscribe_run_events(42).await?;
+    /// while let Some(evt) = rx.recv().await {
+    ///     match evt {
+    ///         BenchRunEvent::Result(r) => println!("case {} → {}", r.case_id, r.status),
+    ///         BenchRunEvent::Lagged { dropped } => eprintln!("dropped {dropped}"),
+    ///         BenchRunEvent::Terminal { status } => {
+    ///             println!("run ended: {status}");
+    ///             break;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub async fn subscribe_run_events(
+        &self,
+        run_id: i64,
+    ) -> Result<(mpsc::UnboundedReceiver<BenchRunEvent>, EventSubscription)> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<()>>();
+        let http = self.inner.http.clone();
+        let token = self.inner.token.clone();
+        let base_url = self.inner.base_url.clone();
+
+        let handle = tokio::spawn(async move {
+            let _ =
+                stream_bench_run_events(http, token, base_url, run_id, tx, Some(ready_tx)).await;
+        });
+
+        match ready_rx.await {
+            Ok(Ok(())) => Ok((rx, EventSubscription::from_handle(handle))),
+            Ok(Err(e)) => {
+                handle.abort();
+                Err(e)
+            }
+            Err(_) => {
+                handle.abort();
+                Err(AkribesError::Other(
+                    "bench SSE listener died before subscription was confirmed".into(),
+                ))
+            }
         }
-        let base = format!("{}/events", self.run_url(run_id));
-        let url = AkribesClient::url_with_query(&base, &Q { after_id });
-        Ok(self
-            .c()
-            .get_opt::<BenchRunEventsPage>(&url)
-            .await?
-            .unwrap_or_default())
     }
 
     /// `POST /bench-runs/{id}/cancel`. Flips the cancel token; in-flight cases
@@ -309,14 +377,13 @@ impl BenchRunsClient {
             "{}/bench-runs/{}/compare/{}",
             self.inner.base_url, run_a, run_b,
         );
-        Ok(self
-            .c()
+        self.c()
             .get_opt::<CompareReport>(&url)
             .await?
             .ok_or_else(|| crate::error::AkribesError::HttpStatus {
                 status: 404,
                 message: format!("compare runs {}↔{} returned 404", run_a, run_b),
-            })?)
+            })
     }
 
     // ── Case-id keyed operations ────────────────────────────────────────────

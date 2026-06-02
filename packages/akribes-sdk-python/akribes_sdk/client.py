@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import random
 import threading
 import uuid
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from akribes_sdk._handles import ProjectHandle, ScriptHandle
+    from akribes_sdk._handles import ProjectHandle
 
 import httpx
 
@@ -21,7 +19,7 @@ from akribes_sdk.errors import (
     AlreadyExistsError,
     AkribesConnectionError,
     AkribesConversionError,
-    AkribesError,
+    AkribesHTTPError,
     AuthError,
     BadGateway502,
     GatewayTimeout504,
@@ -30,7 +28,6 @@ from akribes_sdk.errors import (
     ScriptSchemaChangedError,
     ServerError500,
     ServiceUnavailable503,
-    TransientError,
 )
 from akribes_sdk._parsers import parse_convert_result
 from akribes_sdk.models import ConvertResult
@@ -66,14 +63,13 @@ class AkribesClient:
         client.me             # GET /me, sandbox
         client.events         # Hub-level SSE streaming (global)
         client.executions     # By-ID ops: get, cancel, resume, await_result, documents
-        client.evals          # By-ID ops: cancel_run, get_run, get_results
         client.clients        # By-ID ops: delete(client_id)
 
     Project-scoped namespaces — obtain via :meth:`project` or :meth:`get_project`::
 
         proj = client.project(2)
         proj.scripts / proj.drafts / proj.versions / proj.channels
-        proj.executions / proj.evals / proj.mcp / proj.documents
+        proj.executions / proj.bench / proj.mcp / proj.documents
         proj.clients / proj.events
 
     Authentication
@@ -192,7 +188,7 @@ class AkribesClient:
         from akribes_sdk.resources import (
             Events,
             ExecutionsByID,
-            EvalsByID,
+            BenchRuns,
             ClientsByID,
             Me,
             Projects,
@@ -208,7 +204,7 @@ class AkribesClient:
         self.me         = Me(global_api)
         self.events     = Events(global_api)
         self.executions = ExecutionsByID(global_api)
-        self.evals      = EvalsByID(global_api)
+        self.bench_runs = BenchRuns(global_api)
         self.clients    = ClientsByID(global_api)
 
     # ── Project handles ──────────────────────────────────────────────────
@@ -243,9 +239,9 @@ class AkribesClient:
             if p is None:
                 raise NotFoundError(f"project {name_or_id!r}")
             return self.project(name_or_id)
-        # name resolution — list all and match
-        projects = await self.projects.list()
-        for p in projects:
+        # name resolution — list all and match. ``projects.list()`` returns an
+        # ``AsyncPage`` (async-iterable, not awaitable), so iterate it directly.
+        async for p in self.projects.list():
             if p.name == name_or_id:
                 return self.project(p.id)
         raise NotFoundError(f"project {name_or_id!r}")
@@ -413,7 +409,12 @@ class AkribesClient:
             raise ServiceUnavailable503(msg, status=status, body_snippet=snippet, retry_after=retry_after)
         if status == 504:
             raise GatewayTimeout504(msg, status=status, body_snippet=snippet, retry_after=retry_after)
-        raise AkribesError(msg)
+        # Any other 4xx (incl. 400) — carry the status + body so callers can
+        # re-classify structured error envelopes (e.g. the bench client's
+        # `case_type_mismatch` / `Judge contract mismatch` 400 bodies). Still
+        # an AkribesError subclass, so existing `except AkribesError` keeps
+        # working.
+        raise AkribesHTTPError(msg, status=status, body_snippet=snippet)
 
     # ── Document Conversion ──────────────────────────────────────────────
 

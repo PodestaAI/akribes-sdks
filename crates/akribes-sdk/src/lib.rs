@@ -50,7 +50,6 @@ pub use sub::clients::RegisteredClientsClient;
 pub use sub::convert::ConvertClient;
 pub use sub::documents::DocumentsClient;
 pub use sub::drafts::DraftsClient;
-pub use sub::evals::EvalsClient;
 pub use sub::events::EventsClient;
 pub use sub::executions::ExecutionsClient;
 pub use sub::projects::ProjectsClient;
@@ -109,7 +108,7 @@ mod tests {
     }
 
     fn make_client(server: &Server) -> AkribesClient {
-        AkribesClient::builder(&server.url())
+        AkribesClient::builder(server.url())
             .project_id(1)
             .name("test-app")
             .id("test-id")
@@ -117,7 +116,7 @@ mod tests {
     }
 
     fn make_authed_client(server: &Server) -> AkribesClient {
-        AkribesClient::builder(&server.url())
+        AkribesClient::builder(server.url())
             .project_id(1)
             .name("test-app")
             .id("test-id")
@@ -208,7 +207,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = AkribesClient::builder(&server.url())
+        let client = AkribesClient::builder(server.url())
             .project_id(1)
             .name("test-app")
             .id("test-id")
@@ -252,7 +251,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = AkribesClient::builder(&server.url())
+        let client = AkribesClient::builder(server.url())
             .project_id(1)
             .on_behalf_of("alice@acme.com")
             .build();

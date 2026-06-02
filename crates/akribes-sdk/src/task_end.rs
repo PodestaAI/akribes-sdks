@@ -32,9 +32,11 @@ use serde::{Deserialize, Serialize};
 /// keeps flowing.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TaskEndVariant {
     /// Task produced a well-typed value that passed the full validation
     /// pipeline. Wire default when `variant` is absent (pre-#206).
+    #[default]
     Success,
     /// Task had a `T | Unable` return type and the agent emitted a canonical
     /// `{"unable": ...}` envelope. The owning `TaskEnd.value` carries the
@@ -51,14 +53,6 @@ pub enum TaskEndVariant {
     /// [`akribes_types::event::EngineEvent::TaskEnd`] directly.
     #[serde(other)]
     Unknown,
-}
-
-impl Default for TaskEndVariant {
-    fn default() -> Self {
-        // Mirrors akribes-core's default. Old wire payloads (pre-#206) that
-        // omit `variant` entirely come in as `Success`.
-        TaskEndVariant::Success
-    }
 }
 
 impl From<core_event::TaskEndVariant> for TaskEndVariant {

@@ -387,6 +387,114 @@ pub(crate) async fn stream_sse_with_retry(
     }
 }
 
+/// Open the bench-run SSE stream at `GET /bench-runs/{run_id}/events`
+/// and forward each decoded [`BenchRunEvent`] to `tx`.
+///
+/// Reuses the same byte deframer ([`split_sse_message_bytes`]) and
+/// field parser ([`parse_sse_message`]) as the hub `/events` reader, but
+/// decodes the bench endpoint's named frames (`result` / `lagged` /
+/// `terminal`) instead of the hub's `Vec<HubEvent>` batches.
+///
+/// Single-connection (no retry/backoff): a bench run is short-lived and
+/// the server emits a synthetic `terminal` frame before closing the
+/// stream, so there is no replay cursor to resume from. The function
+/// returns once the HTTP body ends (after the `terminal` frame) or `tx`
+/// is dropped. A non-2xx response surfaces as `Err` to the caller.
+pub(crate) async fn stream_bench_run_events(
+    http: reqwest::Client,
+    token: Arc<tokio::sync::RwLock<Option<String>>>,
+    base_url: String,
+    run_id: i64,
+    tx: mpsc::UnboundedSender<BenchRunEvent>,
+    mut ready_tx: Option<oneshot::Sender<Result<()>>>,
+) -> Result<()> {
+    let url = format!("{}/bench-runs/{}/events", base_url, run_id);
+    let mut req = http.get(&url).header("Accept", "text/event-stream");
+    if let Some(ref t) = *token.read().await {
+        req = req.bearer_auth(t);
+    }
+    let res = match req.send().await.map_err(AkribesError::Http) {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(rt) = ready_tx.take() {
+                let _ = rt.send(Err(AkribesError::Other(format!(
+                    "bench SSE subscribe failed: {e}"
+                ))));
+            }
+            return Err(e);
+        }
+    };
+    if !res.status().is_success() {
+        let status = res.status().as_u16();
+        let err = AkribesError::HttpStatus {
+            status,
+            message: format!("bench SSE subscribe failed: {}", res.status()),
+        };
+        if let Some(rt) = ready_tx.take() {
+            let _ = rt.send(Err(AkribesError::HttpStatus {
+                status,
+                message: format!("bench SSE subscribe failed: {}", res.status()),
+            }));
+        }
+        return Err(err);
+    }
+    if let Some(rt) = ready_tx.take() {
+        let _ = rt.send(Ok(()));
+    }
+
+    let mut stream = res.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(AkribesError::Http)?;
+        buf.extend_from_slice(&chunk);
+        while let Some((msg_bytes, delim_len)) = split_sse_message_bytes(&buf) {
+            let message = String::from_utf8_lossy(&buf[..msg_bytes]).into_owned();
+            buf.drain(..msg_bytes + delim_len);
+            let Some(frame) = parse_sse_message(&message) else {
+                continue;
+            };
+            match frame.event_type.as_str() {
+                "result" => match serde_json::from_str::<BenchResult>(&frame.data) {
+                    Ok(r) => {
+                        if tx.send(BenchRunEvent::Result(Box::new(r))).is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "bench SSE result parse error");
+                    }
+                },
+                "lagged" => {
+                    let dropped = serde_json::from_str::<serde_json::Value>(&frame.data)
+                        .ok()
+                        .and_then(|v| v.get("dropped").and_then(|d| d.as_u64()))
+                        .unwrap_or(0);
+                    if tx.send(BenchRunEvent::Lagged { dropped }).is_err() {
+                        return Ok(());
+                    }
+                }
+                "terminal" => {
+                    let status = serde_json::from_str::<serde_json::Value>(&frame.data)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("status")
+                                .and_then(|s| s.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+                    // Best-effort: deliver the terminal marker, then stop.
+                    let _ = tx.send(BenchRunEvent::Terminal { status });
+                    return Ok(());
+                }
+                other => {
+                    tracing::warn!(event_type = other, "ignoring unknown bench SSE event type");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// SDK-wide canonical SSE/heartbeat backoff curve (#1182):
 /// exponential with full jitter, base 1s, cap 30s.
 fn retry_backoff(attempt: u32) -> std::time::Duration {
@@ -460,43 +568,44 @@ async fn stream_sse(
             let message = String::from_utf8_lossy(&buf[..msg_bytes]).into_owned();
             buf.drain(..msg_bytes + delim_len);
 
-            let mut data_parts: Vec<&str> = Vec::new();
-            let mut event_type = String::new();
-            let mut event_id: Option<i64> = None;
-            for line in message.lines() {
-                if let Some(rest) = line.strip_prefix("data: ") {
-                    data_parts.push(rest);
-                } else if let Some(rest) = line.strip_prefix("data:") {
-                    data_parts.push(rest);
-                } else if let Some(rest) = line.strip_prefix("event: ") {
-                    event_type = rest.to_string();
-                } else if let Some(rest) = line.strip_prefix("event:") {
-                    event_type = rest.to_string();
-                } else if let Some(rest) = line.strip_prefix("id: ") {
-                    event_id = rest.parse::<i64>().ok();
-                } else if let Some(rest) = line.strip_prefix("id:") {
-                    event_id = rest.parse::<i64>().ok();
-                }
-            }
+            let Some(frame) = parse_sse_message(&message) else {
+                continue;
+            };
+            let SseFrame {
+                event_type,
+                data,
+                event_id,
+            } = frame;
             // Persist the cursor so the retry wrapper sees the latest
             // `seq` we received before any subsequent disconnect.
             if let Some(seq) = event_id {
                 *last_event_id_out.lock().unwrap() = Some(seq);
             }
 
-            if data_parts.is_empty() {
-                continue;
-            }
-
-            // Per SSE spec, multiple data: lines are joined with \n.
-            let data = data_parts.join("\n");
-
             if event_type == "batch" || event_type.is_empty() {
-                match serde_json::from_str::<Vec<HubEvent>>(&data) {
-                    Ok(batch) => {
-                        for evt in batch {
-                            if tx.send(evt).is_err() {
-                                return Ok(());
+                // Decode the batch element-by-element rather than as a single
+                // `Vec<HubEvent>`. A batch frequently mixes event kinds (e.g.
+                // co-occurring `Execution` and `Bench` frames), and the hub
+                // can introduce new `type` discriminants the SDK predates. A
+                // monolithic `Vec<HubEvent>` decode aborts the WHOLE batch on
+                // the first unrecognised `type`, silently dropping the known
+                // events alongside it. Per-element decode skips only the
+                // element we can't model and still delivers the rest.
+                match serde_json::from_str::<Vec<serde_json::Value>>(&data) {
+                    Ok(raw_events) => {
+                        for raw in raw_events {
+                            match serde_json::from_value::<HubEvent>(raw) {
+                                Ok(evt) => {
+                                    if tx.send(evt).is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "skipping unrecognised hub event in batch"
+                                    );
+                                }
                             }
                         }
                     }
@@ -513,6 +622,51 @@ async fn stream_sse(
     Ok(())
 }
 
+/// One decoded SSE frame: the `event:` type (empty when omitted), the
+/// joined `data:` payload, and the optional numeric `id:` cursor. Shared
+/// shape so multiple endpoint readers (the hub `/events` stream and the
+/// bench `/bench-runs/{id}/events` stream) can reuse the same byte
+/// deframer + line parser without each re-implementing SSE framing.
+pub(crate) struct SseFrame {
+    pub event_type: String,
+    pub data: String,
+    pub event_id: Option<i64>,
+}
+
+/// Parse one complete SSE message (already deframed by
+/// [`split_sse_message_bytes`]) into its `event:` / `data:` / `id:`
+/// fields. Returns `None` when the message carried no `data:` line (a
+/// bare keepalive or comment), which callers skip. Multiple `data:`
+/// lines are joined with `\n` per the SSE spec.
+pub(crate) fn parse_sse_message(message: &str) -> Option<SseFrame> {
+    let mut data_parts: Vec<&str> = Vec::new();
+    let mut event_type = String::new();
+    let mut event_id: Option<i64> = None;
+    for line in message.lines() {
+        if let Some(rest) = line.strip_prefix("data: ") {
+            data_parts.push(rest);
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data_parts.push(rest);
+        } else if let Some(rest) = line.strip_prefix("event: ") {
+            event_type = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("event:") {
+            event_type = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("id: ") {
+            event_id = rest.parse::<i64>().ok();
+        } else if let Some(rest) = line.strip_prefix("id:") {
+            event_id = rest.parse::<i64>().ok();
+        }
+    }
+    if data_parts.is_empty() {
+        return None;
+    }
+    Some(SseFrame {
+        event_type,
+        data: data_parts.join("\n"),
+        event_id,
+    })
+}
+
 /// Find the first complete SSE message in the byte buffer.
 /// Returns `Some((message_len, delimiter_len))` or `None` if no complete
 /// message yet. The caller should take the first `message_len` bytes and
@@ -524,7 +678,7 @@ async fn stream_sse(
 /// in the buffer — not the first one a fixed-order scan happens to find —
 /// or two interleaved events would be merged into one and parsed as a
 /// single (malformed) message. Mirrors the TS SDK's `findSseDelimiter`.
-fn split_sse_message_bytes(buf: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn split_sse_message_bytes(buf: &[u8]) -> Option<(usize, usize)> {
     let mut best: Option<(usize, usize)> = None;
     for delimiter in &[
         b"\r\n\r\n".as_slice(),

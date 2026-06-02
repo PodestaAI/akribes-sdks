@@ -1,4 +1,4 @@
-// Document ingest sub-client. Mirrors the Rust akribes-sdk-rust
+// Document ingest sub-client. Mirrors the Rust akribes-sdk
 // `DocumentsClient` surface (claim / upload / ingest), plus an `onPhase`
 // progress callback for browser UI.
 //
@@ -164,9 +164,15 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
       'SHA-256 unavailable: ingest requires a secure context (HTTPS or localhost)',
     );
   }
-  // Cast: TypeScript 5.7+ narrows `Uint8Array<ArrayBufferLike>` which BufferSource
-  // excludes. Our bytes are always regular (non-shared) buffers, so the cast is safe.
-  const buf = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+  // Cast: TypeScript 5.7+ types `bytes` as `Uint8Array<ArrayBufferLike>`,
+  // whose `ArrayBufferLike` admits `SharedArrayBuffer` and so isn't assignable
+  // to the DOM/webcrypto `BufferSource` (which wants a regular `ArrayBuffer`).
+  // Our bytes are always regular (non-shared) buffers, so narrowing the buffer
+  // param to `ArrayBuffer` is safe. Casting to the concrete `Uint8Array<
+  // ArrayBuffer>` (rather than the global `BufferSource`, which is absent under
+  // this package's no-DOM check config) typechecks in both that config and
+  // Studio's DOM-enabled build, which compiles this source directly.
+  const buf = await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>);
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
@@ -257,7 +263,10 @@ export class DocumentsClient {
     opts?: { signal?: AbortSignal },
   ): Promise<UploadResult> {
     const form = new FormData();
-    form.append('file', new Blob([bytes as BufferSource]), filename);
+    // Same `Uint8Array<ArrayBufferLike>` → non-shared-buffer narrowing as in
+    // `sha256Hex`; a `Uint8Array<ArrayBuffer>` is a valid `BlobPart` under both
+    // the no-DOM check config and Studio's DOM build.
+    form.append('file', new Blob([bytes as Uint8Array<ArrayBuffer>]), filename);
     const url = `${this.http.getBaseUrl()}/projects/${this.projectId}/documents`;
     // POST /documents blocks for the full server-side conversion. Bun
     // enforces an internal 5-minute fetch timeout that AbortSignal cannot

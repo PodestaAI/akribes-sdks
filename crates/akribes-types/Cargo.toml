@@ -1,13 +1,13 @@
 [package]
 name = "akribes-types"
-version = "0.21.17"
+version = "0.22.0"
 edition = "2024"
 rust-version.workspace = true
 description = "Wire-level types shared by the Akribes SDK and core (events, values, AST shapes, errors)."
 license = "MIT"
 homepage = "https://akribes.ai"
 repository = "https://github.com/PodestaAI/akribes-sdks"
-documentation = "https://akribes.ai"
+documentation = "https://akribes.ai/sdks/rust/"
 readme = "README.md"
 keywords = ["akribes", "ai", "llm", "agent"]
 categories = ["api-bindings", "data-structures"]
@@ -26,3 +26,6 @@ httpdate = "1"
 # Warn-log on `ErrorCode::from_wire("AKRIBES-E-OTHER")` decode so
 # producers that skip a more specific code are visible in prod.
 tracing = { workspace = true }
+
+[lints]
+workspace = true

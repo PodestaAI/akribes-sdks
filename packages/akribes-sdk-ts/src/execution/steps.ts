@@ -7,7 +7,7 @@
  * events become user-visible steps — both Studio and the docs `.akr` runner
  * consume it.
  */
-import type { HubEvent, SuspendTrigger, TypeRef, ValidationErrorWire } from '../types';
+import type { EngineEvent, HubEvent, SuspendTrigger, TypeRef, ValidationErrorWire } from '../types';
 import { normalizeSuspendTrigger } from '../workflowEvents';
 
 /** Controls where a step is displayed. */
@@ -736,9 +736,13 @@ export function reduceExecutionEvent(
 ): { steps: ExecutionStep[]; effects: ReducerSideEffects } {
   if (hubEvt.type !== 'Execution') return { steps: prev, effects: {} };
 
-  const evt = hubEvt.payload.event;
-  const evName = (evt as any).type as string;
-  const evPayload = (evt as any).payload as any;
+  const evt: EngineEvent = hubEvt.payload.event;
+  const evName = evt.type;
+  // `EngineEvent.payload` is `unknown` (the union is open — one variant per
+  // engine event kind). Each `case` below knows the concrete shape for its
+  // `evName`, so we widen to `any` once here rather than re-asserting the
+  // payload shape in every arm. The `evName` switch is the de-facto narrower.
+  const evPayload = evt.payload as any;
   const timestamp = Date.now();
   const id = `${evName}-${timestamp}-${Math.random()}`;
   const effects: ReducerSideEffects = {};
@@ -787,9 +791,9 @@ export function reduceExecutionEvent(
           )
         : -1;
       const idx = byTaskId !== -1 ? byTaskId : byTaskName;
-      if (idx !== -1) {
+      const cur = idx !== -1 ? prev[idx] : undefined;
+      if (cur) {
         const newSteps = [...prev];
-        const cur = newSteps[idx];
         newSteps[idx] = {
           ...cur,
           // The TaskPrompt arm seeds with the placeholder "Generating response\u2026";
@@ -829,22 +833,23 @@ export function reduceExecutionEvent(
       const chatIdx = (() => {
         for (let i = prev.length - 1; i >= 0; i -= 1) {
           const s = prev[i];
-          if (s.type === 'chat' && s.taskName === name && s.valueType == null) return i;
+          if (s && s.type === 'chat' && s.taskName === name && s.valueType == null) return i;
         }
         return -1;
       })();
-      if (chatIdx !== -1) {
+      const chatStep = chatIdx !== -1 ? prev[chatIdx] : undefined;
+      if (chatStep) {
         const merged = [...prev];
         merged[chatIdx] = {
-          ...merged[chatIdx],
+          ...chatStep,
           status: 'success',
-          variables: { ...(merged[chatIdx].variables ?? {}), result },
+          variables: { ...(chatStep.variables ?? {}), result },
           duration: durationMs,
           tokens,
           valueType: value_type ?? null,
           attempt: typeof attempt === 'number' ? attempt : undefined,
-          seq: wireSeq ?? merged[chatIdx].seq,
-          serverTs: wireServerTs ?? merged[chatIdx].serverTs,
+          seq: wireSeq ?? chatStep.seq,
+          serverTs: wireServerTs ?? chatStep.serverTs,
         };
         steps = merged;
       } else {
@@ -965,18 +970,19 @@ export function reduceExecutionEvent(
       let hitIdx = -1;
       for (let i = prev.length - 1; i >= 0; i -= 1) {
         const s = prev[i];
-        if (s.type === 'chat' && (s.taskName === agent || s.agent === agent)) {
+        if (s && s.type === 'chat' && (s.taskName === agent || s.agent === agent)) {
           hitIdx = i;
           break;
         }
       }
-      if (hitIdx === -1) {
+      const hit = hitIdx !== -1 ? prev[hitIdx] : undefined;
+      if (!hit) {
         // Defensive: replay edge cases (e.g. event arrives before its
         // TaskPrompt) shouldn't produce a stray step. Forward-only.
         steps = prev;
       } else {
         const updated = [...prev];
-        updated[hitIdx] = { ...updated[hitIdx], cached: true };
+        updated[hitIdx] = { ...hit, cached: true };
         steps = updated;
       }
       break;
@@ -1170,7 +1176,8 @@ export function reduceExecutionEvent(
           for (let i = steps.length - 1; i >= 0; i -= 1) {
             const s = steps[i];
             if (
-              s.type === 'sub_script'
+              s
+              && s.type === 'sub_script'
               && s.subScript?.parentTask === frame.parentTask
               && !s.subScript?.closed
             ) {
@@ -1367,15 +1374,15 @@ export function reduceExecutionEvent(
       const idx = (() => {
         for (let i = prev.length - 1; i >= 0; i -= 1) {
           const s = prev[i];
-          if (s.type === 'loop' && s.loopName === loopName && s.status === 'running') return i;
+          if (s && s.type === 'loop' && s.loopName === loopName && s.status === 'running') return i;
         }
         return -1;
       })();
-      if (idx === -1) {
+      const cur = idx !== -1 ? prev[idx] : undefined;
+      if (!cur) {
         steps = prev;
         break;
       }
-      const cur = prev[idx];
       const next = [...prev];
       next[idx] = {
         ...cur,
@@ -1411,15 +1418,15 @@ export function reduceExecutionEvent(
       const idx = (() => {
         for (let i = prev.length - 1; i >= 0; i -= 1) {
           const s = prev[i];
-          if (s.type === 'loop' && s.loopName === loopName && s.status === 'running') return i;
+          if (s && s.type === 'loop' && s.loopName === loopName && s.status === 'running') return i;
         }
         return -1;
       })();
-      if (idx === -1) {
+      const cur = idx !== -1 ? prev[idx] : undefined;
+      if (!cur) {
         steps = prev;
         break;
       }
-      const cur = prev[idx];
       const next = [...prev];
       next[idx] = {
         ...cur,
@@ -1435,19 +1442,20 @@ export function reduceExecutionEvent(
       const toolStepIndex = prev.findLastIndex(
         (s: ExecutionStep) => s.type === 'tool_call' && s.toolName === evPayload.tool_name && s.status === 'running'
       );
-      if (toolStepIndex >= 0) {
+      const toolStep = toolStepIndex >= 0 ? prev[toolStepIndex] : undefined;
+      if (toolStep) {
         const updated = [...prev];
         const durationMs = evPayload.duration
           ? evPayload.duration.secs * 1000 + evPayload.duration.nanos / 1000000
           : undefined;
         updated[toolStepIndex] = {
-          ...updated[toolStepIndex],
+          ...toolStep,
           status: 'success' as const,
           content: `${evPayload.tool_name} completed`,
           toolOutput: evPayload.output,
           duration: durationMs,
-          seq: wireSeq ?? updated[toolStepIndex].seq,
-          serverTs: wireServerTs ?? updated[toolStepIndex].serverTs,
+          seq: wireSeq ?? toolStep.seq,
+          serverTs: wireServerTs ?? toolStep.serverTs,
         };
         steps = updated;
       } else {

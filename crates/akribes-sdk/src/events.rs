@@ -17,8 +17,8 @@ use akribes_types::event::{EngineEvent, TokenUsage};
 
 use crate::models::engine_event_type_name;
 use crate::runtime::{
-    RuntimeEndPayload, RuntimeErrorPayload, RuntimeEvent, RuntimeStartPayload, RuntimeStderrPayload,
-    RuntimeStdoutPayload,
+    RuntimeEndPayload, RuntimeErrorPayload, RuntimeEvent, RuntimeStartPayload,
+    RuntimeStderrPayload, RuntimeStdoutPayload,
 };
 use crate::suspend::SuspendTrigger;
 use crate::task_end::TaskEndVariant;
@@ -154,9 +154,15 @@ pub enum WorkflowEvent {
     },
     /// One chunk of stdout from a running `runtime` block. Many may fire
     /// per invocation; consumers should accumulate.
-    RuntimeStdout { task_name: String, chunk: String },
+    RuntimeStdout {
+        task_name: String,
+        chunk: String,
+    },
     /// One chunk of stderr from a running `runtime` block.
-    RuntimeStderr { task_name: String, chunk: String },
+    RuntimeStderr {
+        task_name: String,
+        chunk: String,
+    },
     /// A `runtime` block completed (the executor returned an
     /// `ExecResult`). A non-zero `exit_code` is still a `RuntimeEnd` —
     /// infrastructure failures (timeout / OOM / unreachable sandbox)
@@ -382,7 +388,12 @@ impl From<EngineEvent> for WorkflowEvent {
             // (`user_message`, `retry_after_ms`, `source`) is available on
             // the underlying `EngineEvent` for SDK consumers that read the
             // raw event stream.
-            EngineEvent::Error { message, kind, code, .. } => Self::Error {
+            EngineEvent::Error {
+                message,
+                kind,
+                code,
+                ..
+            } => Self::Error {
                 message,
                 kind,
                 code: Some(code.as_wire().to_string()),
@@ -526,8 +537,8 @@ impl WorkflowEvent {
             type_tag,
             "RuntimeStart" | "RuntimeStdout" | "RuntimeStderr" | "RuntimeEnd" | "RuntimeError"
         ) {
-            let runtime: RuntimeEvent = serde_json::from_value(value)
-                .map_err(EnvelopeDecodeError::Runtime)?;
+            let runtime: RuntimeEvent =
+                serde_json::from_value(value).map_err(EnvelopeDecodeError::Runtime)?;
             return Ok(runtime.into());
         }
         let engine: EngineEvent =
@@ -544,7 +555,12 @@ mod tests {
     use akribes_types::value::Value;
 
     fn span() -> Span {
-        Span { line: 1, col: 1, end_line: 1, end_col: 1 }
+        Span {
+            line: 1,
+            col: 1,
+            end_line: 1,
+            end_col: 1,
+        }
     }
 
     #[test]
@@ -553,8 +569,10 @@ mod tests {
         assert!(matches!(start, WorkflowEvent::Start { total_tasks: 5 }));
         assert_eq!(start.category(), EventCategory::Progress);
 
-        let end: WorkflowEvent =
-            EngineEvent::WorkflowEnd(akribes_types::event::WorkflowEndPayload::new(Value::String("done".into()))).into();
+        let end: WorkflowEvent = EngineEvent::WorkflowEnd(
+            akribes_types::event::WorkflowEndPayload::new(Value::String("done".into())),
+        )
+        .into();
         match end {
             WorkflowEvent::End { output, .. } => {
                 assert_eq!(output, serde_json::Value::String("done".into()));
@@ -574,7 +592,12 @@ mod tests {
         }
         .into();
         match evt {
-            WorkflowEvent::AgentChunk { task, agent, task_id, chunk } => {
+            WorkflowEvent::AgentChunk {
+                task,
+                agent,
+                task_id,
+                chunk,
+            } => {
                 assert_eq!(task, "summarise");
                 assert_eq!(agent.as_deref(), Some("gpt"));
                 assert_eq!(task_id, "t1");
@@ -622,7 +645,13 @@ mod tests {
         .into();
         assert_eq!(evt.category(), EventCategory::Suspend);
         match evt {
-            WorkflowEvent::Checkpoint { name, token, timeout_secs, trigger, .. } => {
+            WorkflowEvent::Checkpoint {
+                name,
+                token,
+                timeout_secs,
+                trigger,
+                ..
+            } => {
                 assert_eq!(name, "approve");
                 assert_eq!(token, "tok");
                 assert_eq!(timeout_secs, Some(30));
@@ -737,7 +766,12 @@ mod tests {
         }
         .into();
         match evt {
-            WorkflowEvent::ToolApproval { token, tool_ref, node_id, .. } => {
+            WorkflowEvent::ToolApproval {
+                token,
+                tool_ref,
+                node_id,
+                ..
+            } => {
                 assert_eq!(token, "tok");
                 assert_eq!(tool_ref, "web.search");
                 assert_eq!(node_id, Some(42));
@@ -758,7 +792,11 @@ mod tests {
         }
         .into();
         match evt {
-            WorkflowEvent::Breakpoint { token, node_id, env } => {
+            WorkflowEvent::Breakpoint {
+                token,
+                node_id,
+                env,
+            } => {
                 assert_eq!(token, "tok");
                 assert_eq!(node_id, 3u64);
                 assert_eq!(env.get("x"), Some(&serde_json::json!(7)));
@@ -769,8 +807,7 @@ mod tests {
 
     #[test]
     fn error_maps_to_error_category() {
-        let evt: WorkflowEvent =
-            EngineEvent::error_kind(ErrorKind::ScriptError, "boom").into();
+        let evt: WorkflowEvent = EngineEvent::error_kind(ErrorKind::ScriptError, "boom").into();
         assert_eq!(evt.category(), EventCategory::Error);
         match evt {
             WorkflowEvent::Error { message, kind, .. } => {
@@ -808,7 +845,13 @@ mod tests {
         }
         .into();
         match evt {
-            WorkflowEvent::TaskEnd { task, usage, duration, variant, .. } => {
+            WorkflowEvent::TaskEnd {
+                task,
+                usage,
+                duration,
+                variant,
+                ..
+            } => {
                 assert_eq!(task, "t");
                 assert_eq!(duration, Duration::from_millis(100));
                 assert_eq!(usage.unwrap().input_tokens, 10);
@@ -933,7 +976,9 @@ mod tests {
     #[test]
     fn verification_events_are_other() {
         assert_other_named(
-            EngineEvent::VerificationStart { workflow_name: "w".into() },
+            EngineEvent::VerificationStart {
+                workflow_name: "w".into(),
+            },
             "VerificationStart",
         );
         assert_other_named(
@@ -1055,7 +1100,15 @@ mod tests {
                     exit_code: 0,
                     duration_ms: 4242,
                 }),
-                |e| matches!(e, WorkflowEvent::RuntimeEnd { duration_ms: 4242, .. }),
+                |e| {
+                    matches!(
+                        e,
+                        WorkflowEvent::RuntimeEnd {
+                            duration_ms: 4242,
+                            ..
+                        }
+                    )
+                },
             ),
             (
                 RuntimeEvent::RuntimeError(RuntimeErrorPayload {

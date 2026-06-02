@@ -433,6 +433,17 @@ def parse_execution_events(data: dict[str, Any]) -> models.ExecutionEvents:
     )
 
 
+def parse_execution_tasks(data: dict[str, Any]) -> models.ExecutionTasksResponse:
+    """Parse a wire ``GET /executions/{id}/tasks`` envelope into
+    :class:`~akribes_sdk.models.ExecutionTasksResponse`."""
+    return models.ExecutionTasksResponse(
+        execution_id=data["execution_id"],
+        tasks=[
+            models.ExecutionTaskSummary(**t) for t in data.get("tasks", [])
+        ],
+    )
+
+
 def parse_cost_aggregation(data: dict[str, Any]) -> models.CostAggregation:
     """Parse a wire cost-aggregation dict into a frozen :class:`~akribes_sdk.models.CostAggregation`."""
     return models.CostAggregation(
@@ -576,69 +587,188 @@ def parse_graph_response(data: dict[str, Any]) -> models.GraphResponse:
     )
 
 
-# ── Batch F: Eval family ─────────────────────────────────────────────────────
+# ── Bench family ─────────────────────────────────────────────────────────────
 
 
-def parse_eval_suite(data: dict[str, Any]) -> models.EvalSuite:
-    """Parse a wire eval-suite dict."""
-    return models.EvalSuite(
+def parse_bench(data: dict[str, Any]) -> models.Bench:
+    """Parse a wire bench-config dict into :class:`~akribes_sdk.models.Bench`."""
+    return models.Bench(
         id=data["id"],
         script_id=data["script_id"],
-        name=data["name"],
-        runner_url=data["runner_url"],
+        judge_script_id=data.get("judge_script_id"),
+        judge_channel=data["judge_channel"],
         config=data.get("config", {}),
         created_at=data.get("created_at", ""),
-        auto_run_channels=data.get("auto_run_channels", []),
+        updated_at=data.get("updated_at", ""),
     )
 
 
-def parse_eval_run(data: dict[str, Any]) -> models.EvalRun:
-    """Parse a wire eval-run dict."""
-    return models.EvalRun(
-        id=data["id"],
-        suite_id=data["suite_id"],
-        script_id=data["script_id"],
-        source_hash=data["source_hash"],
-        status=data["status"],
-        completed_cases=data["completed_cases"],
-        started_at=data["started_at"],
-        version_id=data.get("version_id"),
-        channel=data.get("channel"),
-        total_cases=data.get("total_cases"),
-        average_score=data.get("average_score"),
-        runner_run_id=data.get("runner_run_id"),
-        detail_url=data.get("detail_url"),
-        triggered_by=data.get("triggered_by"),
-        finished_at=data.get("finished_at"),
-        error=data.get("error"),
-    )
-
-
-def parse_eval_result(data: dict[str, Any]) -> models.EvalResult:
-    """Parse a wire eval-result dict."""
-    return models.EvalResult(
-        id=data["id"],
-        run_id=data["run_id"],
-        case_id=data["case_id"],
-        status=data["status"],
-        score=data.get("score"),
-        metadata=data.get("metadata"),
-        execution_id=data.get("execution_id"),
-        created_at=data.get("created_at", ""),
-    )
-
-
-def parse_eval_suite_summary(data: dict[str, Any]) -> models.EvalSuiteSummary:
-    """Parse a wire eval-suite-summary dict."""
-    return models.EvalSuiteSummary(
-        suite_id=data["suite_id"],
+def parse_project_bench_summary(data: dict[str, Any]) -> models.ProjectBenchSummary:
+    """Parse a wire project-bench-summary dict (``GET /projects/{id}/benches``)."""
+    return models.ProjectBenchSummary(
+        bench_id=data["bench_id"],
         script_id=data["script_id"],
         script_name=data["script_name"],
-        suite_name=data["suite_name"],
+        judge_script_id=data.get("judge_script_id"),
+        judge_script_name=data.get("judge_script_name"),
+        judge_channel=data["judge_channel"],
+        case_count=data.get("case_count", 0),
         latest_run_id=data.get("latest_run_id"),
+        latest_run_status=data.get("latest_run_status"),
+        latest_run_channel=data.get("latest_run_channel"),
+        latest_run_workflow_version_id=data.get("latest_run_workflow_version_id"),
         latest_run_at=data.get("latest_run_at"),
-        latest_avg_score=data.get("latest_avg_score"),
-        prior_avg_score=data.get("prior_avg_score"),
+        latest_run_mean_score=data.get("latest_run_mean_score"),
+        latest_run_cost_usd=data.get("latest_run_cost_usd"),
+        updated_at=data.get("updated_at", ""),
+    )
+
+
+def parse_bench_run(data: dict[str, Any]) -> models.BenchRun:
+    """Parse a wire bench-run dict into :class:`~akribes_sdk.models.BenchRun`."""
+    return models.BenchRun(
+        id=data["id"],
+        bench_id=data["bench_id"],
+        channel=data["channel"],
+        workflow_version_id=data["workflow_version_id"],
+        judge_version_id=data["judge_version_id"],
+        status=data["status"],
+        triggered_by=data.get("triggered_by"),
+        triggered_at=data.get("triggered_at", ""),
+        completed_at=data.get("completed_at"),
+        total_cost_usd=data.get("total_cost_usd", 0.0),
+        total_cases=data.get("total_cases", 0),
+        cache_hit_cases=data.get("cache_hit_cases", 0),
+        notes=data.get("notes"),
+        mcp_session_id=data.get("mcp_session_id"),
+        case_filter=data.get("case_filter"),
+        mean_headline_score=data.get("mean_headline_score"),
+        ok_cases=data.get("ok_cases"),
+        status_breakdown=data.get("status_breakdown"),
+        judge_script_name=data.get("judge_script_name"),
+        warnings=list(data.get("warnings", [])),
+    )
+
+
+def parse_bench_result(data: dict[str, Any]) -> models.BenchResult:
+    """Parse a wire bench-result dict into :class:`~akribes_sdk.models.BenchResult`.
+
+    Handles both the ``/results`` read shape (with ``workflow_output`` +
+    ``error``) and the leaner per-case SSE ``result`` event shape."""
+    return models.BenchResult(
+        id=data["id"],
+        bench_run_id=data["bench_run_id"],
+        case_id=data["case_id"],
+        status=data["status"],
+        created_at=data.get("created_at", ""),
+        workflow_execution_id=data.get("workflow_execution_id"),
+        judge_execution_id=data.get("judge_execution_id"),
+        score=data.get("score"),
+        headline_score=data.get("headline_score"),
+        cost_usd=data.get("cost_usd", 0.0),
+        duration_ms=data.get("duration_ms"),
+        cache_hit=data.get("cache_hit", False),
+        input_hash=data.get("input_hash"),
+        error=data.get("error"),
+        workflow_output=data.get("workflow_output"),
+    )
+
+
+def parse_bench_event(data: dict[str, Any]) -> models.BenchEvent:
+    """Parse a wire ``BenchEvent`` dict (the ``payload`` of a ``HubEvent`` whose
+    ``type == "Bench"``) into :class:`~akribes_sdk.models.BenchEvent`.
+
+    The wire shape is adjacently tagged like the server's ``BenchEvent`` enum::
+
+        {"type": "RunStarted",     "payload": {"project_id", "script_name", "run"}}
+        {"type": "ResultRecorded", "payload": {"project_id", "script_name", "run_id", "result"}}
+        {"type": "RunFinished",    "payload": {"project_id", "script_name", "run"}}
+
+    Reuses :func:`parse_bench_run` / :func:`parse_bench_result` for the embedded
+    rows."""
+    ty = data["type"]
+    inner = data.get("payload", {})
+    run = inner.get("run")
+    result = inner.get("result")
+    return models.BenchEvent(
+        type=ty,
+        project_id=inner["project_id"],
+        script_name=inner["script_name"],
+        run=parse_bench_run(run) if run is not None else None,
+        run_id=inner.get("run_id"),
+        result=parse_bench_result(result) if result is not None else None,
+    )
+
+
+def parse_bench_case(data: dict[str, Any]) -> models.BenchCase:
+    """Parse a wire bench-case dict into :class:`~akribes_sdk.models.BenchCase`."""
+    return models.BenchCase(
+        id=data["id"],
+        project_id=data["project_id"],
+        script_name=data["script_name"],
+        kind=data.get("kind", "case"),
+        frozen=data.get("frozen", True),
+        created_at=data.get("created_at", ""),
+        bench_id=data.get("bench_id"),
+        case_name=data.get("case_name"),
+        inputs=data.get("inputs"),
+        expected_output=data.get("expected_output"),
+        ground_truth=data.get("ground_truth"),
+        input_hash=data.get("input_hash"),
+    )
+
+
+def parse_compare_report(data: dict[str, Any]) -> models.CompareReport:
+    """Parse a wire compare-report dict (``GET /bench-runs/{a}/compare/{b}``)."""
+    agg = data.get("aggregate", {})
+    return models.CompareReport(
+        run_a_id=data["run_a_id"],
+        run_b_id=data["run_b_id"],
+        aggregate=models.CompareAggregate(
+            mean_score_delta=agg.get("mean_score_delta", 0.0),
+            cost_delta_usd=agg.get("cost_delta_usd", 0.0),
+            n_regressed=agg.get("n_regressed", 0),
+            n_improved=agg.get("n_improved", 0),
+            n_unchanged=agg.get("n_unchanged", 0),
+        ),
+        per_case=[
+            models.CompareCase(
+                case_id=c["case_id"],
+                case_label=c.get("case_label", c["case_id"]),
+                flag=c.get("flag", "unchanged"),
+                score_a=c.get("score_a"),
+                score_b=c.get("score_b"),
+                delta=c.get("delta"),
+            )
+            for c in data.get("per_case", [])
+        ],
+    )
+
+
+def parse_drift_report(data: dict[str, Any]) -> models.DriftReport:
+    """Parse a wire drift-report dict (cases contract-drift endpoint)."""
+    return models.DriftReport(
+        drifted=[
+            models.DriftedCase(
+                case_id=d["case_id"],
+                label=d.get("label", d["case_id"]),
+                what_broke=d.get("what_broke", ""),
+            )
+            for d in data.get("drifted", [])
+        ],
+        script_version_id=data.get("script_version_id"),
+        published_at=data.get("published_at"),
+        published_by=data.get("published_by"),
+        summary=data.get("summary", ""),
+    )
+
+
+def parse_bench_run_tag_session(data: dict[str, Any]) -> models.BenchRunTagSessionResponse:
+    """Parse the receipt from ``PATCH /bench-runs/{id}/tag-session``."""
+    return models.BenchRunTagSessionResponse(
+        tagged=data.get("tagged", False),
+        run_id=data["run_id"],
+        mcp_session_id=data["mcp_session_id"],
     )
 
 

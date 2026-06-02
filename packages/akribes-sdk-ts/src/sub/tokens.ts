@@ -93,12 +93,12 @@ export class TokensClient {
 
   /** Mint a new scoped token. Only service tokens can mint. */
   async mint(req: MintTokenRequest, opts?: { signal?: AbortSignal }): Promise<MintTokenResponse> {
-    return (await this.http.fetchOk(this.base, {
+    return this.http.fetchJson<MintTokenResponse>(this.base, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
       signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** List tokens. Service tokens see all; scoped tokens see only their own.
@@ -132,7 +132,7 @@ export class TokensClient {
     if (opts?.includeExpired) params.set('include_expired', 'true');
     const qs = params.toString();
     const url = qs ? `${this.base}?${qs}` : this.base;
-    return (await this.http.fetchOk(url, { signal: opts?.signal })).json();
+    return this.http.fetchJson<TokenInfo[]>(url, { signal: opts?.signal });
   }
 
   /** Revoke a single token by ID. */
@@ -144,8 +144,8 @@ export class TokensClient {
 
   /** Revoke all tokens for a user email (offboarding). Only service tokens can do this. */
   async revokeByEmail(email: string, opts?: { signal?: AbortSignal }): Promise<{ revoked: number }> {
-    return (await this.http.fetchOk(`${this.base}?user_email=${encodeURIComponent(email)}`, {
+    return this.http.fetchJson<{ revoked: number }>(`${this.base}?user_email=${encodeURIComponent(email)}`, {
       method: 'DELETE', signal: opts?.signal,
-    })).json();
+    });
   }
 }

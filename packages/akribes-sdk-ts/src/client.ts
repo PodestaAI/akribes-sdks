@@ -12,7 +12,6 @@ import {
 import { ClientsClient, type HeartbeatStatus } from './sub/clients';
 import { TokensClient } from './sub/tokens';
 import { EventsClient } from './sub/events';
-import { EvalsClient } from './sub/evals';
 import { BenchClient } from './sub/bench';
 import { McpClient } from './sub/mcp';
 import { AkribesError } from './errors';
@@ -133,7 +132,6 @@ export class AkribesClient {
   private _clients?: ClientsClient;
   private _tokens: TokensClient;
   private _events: EventsClient;
-  private _evals?: EvalsClient;
   private _bench?: BenchClient;
   private _mcp?: McpClient;
   private _state: StateClient;
@@ -187,7 +185,6 @@ export class AkribesClient {
         ?? ingestPollTimeoutMsFromEnv()
         ?? DEFAULT_INGEST_POLL_TIMEOUT_MS,
     );
-    this._evals = new EvalsClient(this.http, projectId);
     this._bench = new BenchClient(this.http, projectId);
     this._mcp = new McpClient(this.http, projectId);
   }
@@ -208,7 +205,6 @@ export class AkribesClient {
   /** Hub event subscriptions. Always available — non-project-scoped clients
    *  receive the global stream (filtered to what the token can see). */
   get events(): EventsClient { return this._events; }
-  get evals(): EvalsClient { return this.requireProjectScoped(this._evals, 'evals'); }
   get bench(): BenchClient { return this.requireProjectScoped(this._bench, 'bench'); }
   get mcp(): McpClient { return this.requireProjectScoped(this._mcp, 'mcp'); }
   get state(): StateClient { return this._state; }
@@ -234,7 +230,7 @@ export class AkribesClient {
     const path = this._projectId != null
       ? `/projects/${this._projectId}/convert`
       : '/convert';
-    return (await this.http.fetchOk(`${this.http.getBaseUrl()}${path}`, { method: 'POST', body: form, signal: opts?.signal })).json();
+    return this.http.fetchJson<ConvertResult>(`${this.http.getBaseUrl()}${path}`, { method: 'POST', body: form, signal: opts?.signal });
   }
 
   /** Fetch the caller's per-user sandbox project id (creates one on the
@@ -268,12 +264,12 @@ export class AkribesClient {
     if (opts?.breakpointLines !== undefined) body.breakpoint_lines = opts.breakpointLines;
     if (opts?.channel !== undefined) body.channel = opts.channel;
     if (opts?.triggeredBy !== undefined) body.triggered_by = opts.triggeredBy;
-    return (await this.http.fetchOk(`${this.http.getBaseUrl()}/execute`, {
+    return this.http.fetchJson<{ execution_id: string; project_id: number }>(`${this.http.getBaseUrl()}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: opts?.signal,
-    })).json();
+    });
   }
 
   /** Stream events from ad-hoc executions in the given sandbox project.

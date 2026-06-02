@@ -1,7 +1,7 @@
 /**
  * Sub-client for the akribes-server bench substrate.
  *
- * Mirrors `crates/akribes-sdk-rust/src/sub/bench.rs`. Two surfaces glued onto
+ * Mirrors `crates/akribes-sdk/src/sub/bench.rs`. Two surfaces glued onto
  * one TypeScript class for ergonomic Studio consumption:
  *
  *  - Project-scoped operations live under
@@ -35,16 +35,18 @@ import {
 } from '../errors';
 import type {
   Bench,
+  BenchById,
   BenchCase,
   BenchResult,
   BenchRun,
-  BenchRunEventsPage,
   BenchRunTagSessionResponse,
   CompareReport,
   ContractPreview,
   CreateBenchCaseRequest,
   CreateOrUpdateBenchRequest,
   DriftReport,
+  ExecutionStatus,
+  McpSessionCost,
   PatchBenchCaseRequest,
   ProjectBenchSummary,
   PromoteExecutionRequest,
@@ -306,6 +308,23 @@ export class BenchClient {
     }
   }
 
+  /** `GET /executions/{caseId}` — fetch the raw case execution row. Cases are
+   *  `executions` rows with `kind='case'`, so this hits the same handler as
+   *  {@link ExecutionsClient.get}; it lives here as the bench-surface
+   *  counterpart that resolves a case id to its frozen execution. 404 → `null`
+   *  (mirrors the Rust SDK's `get_case`, which returns `Value::Null` for an
+   *  absent row). The shape is the standard {@link ExecutionStatus} projection;
+   *  legacy promoted-execution rows may carry a null `kind`. */
+  async getCase(caseId: string, opts?: { signal?: AbortSignal }): Promise<ExecutionStatus | null> {
+    const url = `${this.http.getBaseUrl()}/executions/${encodeURIComponent(caseId)}`;
+    try {
+      return await benchFetchJson<ExecutionStatus>(this.http, url, opts);
+    } catch (e) {
+      if (e instanceof AkribesNotFoundError) return null;
+      throw e;
+    }
+  }
+
   /** `PATCH /cases/{id}` — sparse update. */
   async patchCase(
     caseId: string,
@@ -327,6 +346,35 @@ export class BenchClient {
       method: 'DELETE',
       signal: opts?.signal,
     });
+  }
+
+  /** `GET /benches/{id}` — look up a bench by numeric id without going
+   *  through `(project, script)` routing. The server joins in the owning
+   *  `project_id` + `script_name` so a caller can chain into list_cases /
+   *  list_runs without an N+1 project walk. Not tied to this client's
+   *  `projectId` (the server resolves the project from the row). 404 →
+   *  `null` (mirrors the Rust SDK's `bench_by_id`). */
+  async getBenchById(benchId: number, opts?: { signal?: AbortSignal }): Promise<BenchById | null> {
+    const url = `${this.http.getBaseUrl()}/benches/${benchId}`;
+    try {
+      return await benchFetchJson<BenchById>(this.http, url, opts);
+    } catch (e) {
+      if (e instanceof AkribesNotFoundError) return null;
+      throw e;
+    }
+  }
+
+  /** `GET /mcp-sessions/{id}/cost` — aggregated cost for one MCP session,
+   *  read from the same `mcp_session_cost` table the bench coordinator's
+   *  finalize step writes to. Returns `{session_id, total_cost_usd,
+   *  breakdown}`. Service-token only and narrowed to the session's owning
+   *  project server-side; a scoped (non-service) token is rejected with 403.
+   *  A session with no associated bench run is a 404, surfaced as
+   *  {@link AkribesNotFoundError} (the Rust SDK's `mcp_session_cost` keeps
+   *  the 404 visible too rather than coercing it to a zero-cost row). */
+  async getMcpSessionCost(sessionId: string, opts?: { signal?: AbortSignal }): Promise<McpSessionCost> {
+    const url = `${this.http.getBaseUrl()}/mcp-sessions/${encodeURIComponent(sessionId)}/cost`;
+    return benchFetchJson<McpSessionCost>(this.http, url, opts);
   }
 
   /** `POST /executions/{exec_id}/promote-to-case` — promote a completed
@@ -434,25 +482,6 @@ export class BenchClient {
   ): Promise<CompareReport> {
     const url = `${this.http.getBaseUrl()}/bench-runs/${runA}/compare/${runB}`;
     return benchFetchJson<CompareReport>(this.http, url, opts);
-  }
-
-  /** `GET /bench-runs/{id}/events?after_id=N` — JSON-page form of the
-   *  bench-run event stream. Use for MCP-style polling; for live UI prefer
-   *  {@link BenchClient.subscribeRunEvents}. */
-  async runEvents(
-    runId: number,
-    params?: { afterId?: number },
-    opts?: { signal?: AbortSignal },
-  ): Promise<BenchRunEventsPage> {
-    const url = withQuery(this.runUrl(runId, 'events'), {
-      after_id: params?.afterId,
-    });
-    try {
-      return await benchFetchJson<BenchRunEventsPage>(this.http, url, opts);
-    } catch (e) {
-      if (e instanceof AkribesNotFoundError) return { events: [] };
-      throw e;
-    }
   }
 
   /** `PATCH /bench-runs/{id}/tag-session` — attribute the run to an MCP

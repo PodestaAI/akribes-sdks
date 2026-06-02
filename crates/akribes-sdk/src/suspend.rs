@@ -77,8 +77,10 @@ pub struct UnableRecord {
 /// new SDK release.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
+#[derive(Default)]
 pub enum SuspendTrigger {
     /// The DAG reached an explicit `checkpoint cp(...)` call site.
+    #[default]
     DagPosition,
     /// `on_validation_exhausted:` fired — retries consumed without
     /// producing a payload that passes parse → schema → custom validation.
@@ -112,14 +114,6 @@ pub enum SuspendTrigger {
     /// normalized [`crate::WorkflowEvent`].
     #[serde(other)]
     Unknown,
-}
-
-impl Default for SuspendTrigger {
-    fn default() -> Self {
-        // Mirrors akribes-core's default. Old wire payloads (pre-Stream 6) that
-        // omit `trigger` entirely come in as `DagPosition`.
-        SuspendTrigger::DagPosition
-    }
 }
 
 impl From<core_event::SuspendTrigger> for SuspendTrigger {

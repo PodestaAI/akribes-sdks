@@ -1,3 +1,21 @@
+/** Minimal shape of the browser `MessageEvent` fields this module reads.
+ *  The base tsconfig targets `lib: ["ESNext"]` (no DOM), so the global
+ *  `MessageEvent` interface isn't visible here; the EventSource path below
+ *  only runs in a real browser where these fields are present. */
+type SseEvent = { data: string; lastEventId?: string };
+
+/** Minimal browser `EventSource` surface used by the EventSource path. Same
+ *  rationale as {@link SseEvent}: without the DOM lib, bun-types exposes
+ *  `EventSource` as an empty interface, so we describe the members we touch
+ *  and cast the constructed instance to this shape. */
+interface BrowserEventSource {
+  onopen: (() => void) | null;
+  onmessage: ((e: SseEvent) => void) | null;
+  onerror: (() => void) | null;
+  addEventListener(type: string, listener: (e: SseEvent) => void): void;
+  close(): void;
+}
+
 export type SseMessage = {
   event: string;
   data: string;
@@ -121,7 +139,7 @@ export function connectSse(options: EventStreamOptions): () => void {
     // new one. EventSource's native reconnect also sends `Last-Event-ID`
     // automatically — but only on the same instance, not after we tear it
     // down and re-open. So we track + replay it explicitly.
-    let es: EventSource | null = null;
+    let es: BrowserEventSource | null = null;
     let reconnecting = false;
     const open = async () => {
       if (disposed() || reconnecting) return;
@@ -139,13 +157,13 @@ export function connectSse(options: EventStreamOptions): () => void {
           u.searchParams.set('last_event_id', lastEventId);
           resolved = u.toString();
         }
-        es = new EventSource(resolved);
+        es = new (EventSource as unknown as new (url: string) => BrowserEventSource)(resolved);
         es.onopen = () => { resetBackoff(); onOpen?.(); };
-        es.addEventListener('batch', (e: MessageEvent) => {
-          wrappedOnMessage({ event: 'batch', data: e.data, id: (e as MessageEvent & { lastEventId?: string }).lastEventId });
+        es.addEventListener('batch', (e: SseEvent) => {
+          wrappedOnMessage({ event: 'batch', data: e.data, id: e.lastEventId });
         });
-        es.onmessage = (e: MessageEvent) => {
-          wrappedOnMessage({ event: '', data: e.data, id: (e as MessageEvent & { lastEventId?: string }).lastEventId });
+        es.onmessage = (e: SseEvent) => {
+          wrappedOnMessage({ event: '', data: e.data, id: e.lastEventId });
         };
         es.onerror = () => {
           if (disposed()) return;
@@ -179,7 +197,18 @@ export function connectSse(options: EventStreamOptions): () => void {
           headers: reqHeaders,
           signal: internal.signal,
         });
-        if (!res.ok || !res.body) return;
+        if (!res.ok || !res.body) {
+          // A non-2xx (or body-less) response is a transport failure, not a
+          // reason to give up. Treat it like a thrown fetch: surface it via
+          // `onError` and fall through to the reconnect-with-backoff path
+          // below. Returning here would silently and permanently kill the
+          // stream — e.g. a restarting server or a gateway hiccup returning
+          // 503 would never recover even with `reconnect: true`.
+          onError?.(new Error(`SSE connection failed: HTTP ${res.status}`));
+          if (!reconnect || disposed()) return;
+          await new Promise((r) => setTimeout(r, nextDelay()));
+          continue;
+        }
         // Subscribe-before-POST hand-off: the server has accepted the GET
         // (and thus attached its broadcast subscriber) the moment fetch
         // resolves with a 2xx response and a body. Fire `onOpen` before

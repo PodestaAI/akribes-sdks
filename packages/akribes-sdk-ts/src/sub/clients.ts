@@ -55,11 +55,11 @@ export class ClientsClient {
     if (!this.clientId || !this.clientName) {
       throw new Error('clientId and clientName are required for init(). Pass id and name to AkribesClient constructor.');
     }
-    const res: RegisterClientResponse = await (await this.http.fetchOk(`${this.http.getBaseUrl()}/projects/${this.projectId}/clients`, {
+    const res = await this.http.fetchJson<RegisterClientResponse>(`${this.http.getBaseUrl()}/projects/${this.projectId}/clients`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: this.clientId, name: this.clientName, interests }),
       signal: opts?.signal,
-    })).json();
+    });
 
     // Populate contract state from response
     this.contractState.brokenScripts.clear();
@@ -143,7 +143,7 @@ export class ClientsClient {
   }
 
   async list(opts?: { signal?: AbortSignal }): Promise<ClientInfo[]> {
-    return (await this.http.fetchOk(`${this.http.getBaseUrl()}/projects/${this.projectId}/clients`, opts)).json();
+    return this.http.fetchJson<ClientInfo[]>(`${this.http.getBaseUrl()}/projects/${this.projectId}/clients`, opts);
   }
 
   async delete(id: string, opts?: { signal?: AbortSignal }): Promise<void> {
@@ -155,10 +155,10 @@ export class ClientsClient {
   // ── Lock management ─────────────────────────────────────────────────
 
   async listLocks(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ContractLockInfo[]> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ContractLockInfo[]>(
       `${this.http.getBaseUrl()}/projects/${this.projectId}/scripts/${encodeURIComponent(scriptName)}/locks`,
       opts,
-    )).json();
+    );
   }
 
   async revokeLock(scriptName: string, lockId: number, opts?: { signal?: AbortSignal }): Promise<void> {
@@ -169,7 +169,7 @@ export class ClientsClient {
   }
 
   async rebindLock(scriptName: string, lockId: number, versionId?: number, opts?: { signal?: AbortSignal }): Promise<ContractLockInfo> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ContractLockInfo>(
       `${this.http.getBaseUrl()}/projects/${this.projectId}/scripts/${encodeURIComponent(scriptName)}/locks/${lockId}/rebind`,
       {
         method: 'PATCH',
@@ -177,7 +177,7 @@ export class ClientsClient {
         body: JSON.stringify({ version_id: versionId ?? null }),
         signal: opts?.signal,
       },
-    )).json();
+    );
   }
 
   // ── Flat cross-project lock helpers (#1133) ───────────────────────────
@@ -191,10 +191,10 @@ export class ClientsClient {
    *  variant of {@link listLocks}; the implicit project_id on this client
    *  is ignored. */
   async listLocksFor(projectId: number, scriptName: string, opts?: { signal?: AbortSignal }): Promise<ContractLockInfo[]> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ContractLockInfo[]>(
       `${this.http.getBaseUrl()}/projects/${projectId}/scripts/${encodeURIComponent(scriptName)}/locks`,
       opts,
-    )).json();
+    );
   }
 
   /** Delete (revoke) a single lock in `projectId`. Cross-project variant
@@ -216,7 +216,7 @@ export class ClientsClient {
     versionId?: number,
     opts?: { signal?: AbortSignal },
   ): Promise<ContractLockInfo> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<ContractLockInfo>(
       `${this.http.getBaseUrl()}/projects/${projectId}/scripts/${encodeURIComponent(scriptName)}/locks/${lockId}/rebind`,
       {
         method: 'PATCH',
@@ -224,7 +224,7 @@ export class ClientsClient {
         body: JSON.stringify({ version_id: versionId ?? null }),
         signal: opts?.signal,
       },
-    )).json();
+    );
   }
 
   async destroy() {

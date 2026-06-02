@@ -614,7 +614,7 @@ impl AkribesClient {
 
     /// Enter a project scope. The returned [`ProjectScope`] gives infallible
     /// access to all project-scoped sub-clients (`scripts`, `drafts`,
-    /// `versions`, `channels`, `evals`, `events`, `registered_clients`).
+    /// `versions`, `channels`, `bench`, `events`, `registered_clients`).
     ///
     /// ```no_run
     /// # use akribes_sdk::AkribesClient;
@@ -867,11 +867,6 @@ impl ProjectScope {
     /// Script channels within this project.
     pub fn channels(&self) -> crate::sub::channels::ChannelsClient {
         crate::sub::channels::ChannelsClient::new(Arc::clone(&self.inner), self.project_id)
-    }
-
-    /// Eval suites and runs within this project.
-    pub fn evals(&self) -> crate::sub::evals::EvalsClient {
-        crate::sub::evals::EvalsClient::new(Arc::clone(&self.inner), self.project_id)
     }
 
     /// Project-scoped bench operations: config CRUD, cases, list/trigger runs

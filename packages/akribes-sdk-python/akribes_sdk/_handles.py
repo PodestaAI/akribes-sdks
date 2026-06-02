@@ -12,8 +12,8 @@ from akribes_sdk.models import (
     ExecutionOutput,
     ExecutionStatus,
     ExecutionStatusValue,
+    ProjectCost,
     RunResult,
-    S3DocumentRef,
 )
 from akribes_sdk.script_type import ScriptType
 
@@ -29,8 +29,8 @@ class ProjectHandle:
 
     __slots__ = (
         "_client", "id",
-        "scripts", "drafts", "versions", "channels", "executions", "evals",
-        "mcp", "documents", "clients", "events",
+        "scripts", "drafts", "versions", "channels", "executions",
+        "bench", "mcp", "documents", "clients", "events",
     )
 
     def __init__(self, client: "AkribesClient", project_id: int) -> None:
@@ -38,7 +38,7 @@ class ProjectHandle:
         self.id = project_id
         from akribes_sdk.resources._base import _ProjectApiClient
         from akribes_sdk.resources import (
-            Scripts, Drafts, Versions, Channels, Executions, Evals, Mcp,
+            Scripts, Drafts, Versions, Channels, Executions, Bench, Mcp,
             DocumentsClient, ClientsProjectScoped, EventsProjectScoped,
         )
         api = _ProjectApiClient(client, project_id)
@@ -47,7 +47,7 @@ class ProjectHandle:
         self.versions   = Versions(api)
         self.channels   = Channels(api)
         self.executions = Executions(api)
-        self.evals      = Evals(api)
+        self.bench      = Bench(api)
         self.mcp        = Mcp(api)
         self.documents  = DocumentsClient(api, client._ingest_poll_timeout_ms)
         self.clients    = ClientsProjectScoped(api)
@@ -138,7 +138,7 @@ class ProjectHandle:
             script, channel=channel, timeout=timeout, **inputs,
         )
 
-    async def cost(self, *, since: str | None = None, until: str | None = None) -> dict[str, Any]:
+    async def cost(self, *, since: str | None = None, until: str | None = None) -> ProjectCost:
         """Get cost aggregation for this project."""
         return await self.executions.get_project_cost(since=since, until=until)
 

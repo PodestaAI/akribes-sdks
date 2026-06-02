@@ -12,7 +12,8 @@ import httpx
 from httpx_sse import aconnect_sse
 
 from akribes_sdk.errors import AkribesConnectionError
-from akribes_sdk.models import EngineEvent, HubEvent
+from akribes_sdk._parsers import parse_bench_event
+from akribes_sdk.models import BenchEvent, EngineEvent, HubEvent
 from akribes_sdk.resources._base import Resource, ProjectResource  # global — SSE /events endpoint
 from akribes_sdk._transport import (
     WsHandshakeError,
@@ -591,6 +592,79 @@ class Events(Resource):
         """
         async for raw in self.engine_events(script_name):
             yield to_workflow_event(raw)
+
+    async def bench_events(
+        self,
+        *,
+        script_name: str | None = None,
+        ready: asyncio.Event | None = None,
+    ) -> AsyncGenerator[BenchEvent, None]:
+        """Async iterator of typed :class:`BenchEvent`s from the hub stream.
+
+        Filters the project ``/events`` stream down to ``HubEvent`` frames of
+        ``type == "Bench"`` and parses each ``payload`` into a typed
+        :class:`BenchEvent` (reusing :class:`BenchRun` / :class:`BenchResult`).
+        When *script_name* is given, only events for that script are yielded.
+
+        Example::
+
+            async for evt in client.events.bench_events():
+                if evt.type == "RunStarted":
+                    print("run", evt.run.id, "started")
+                elif evt.type == "ResultRecorded":
+                    print("case", evt.result.case_id, "→", evt.result.status)
+                elif evt.type == "RunFinished":
+                    break
+        """
+        async for hub_event in self.stream(script_name=script_name, ready=ready):
+            if hub_event.type != "Bench":
+                continue
+            evt = parse_bench_event(hub_event.payload)
+            if script_name is not None and evt.script_name != script_name:
+                continue
+            yield evt
+
+    def on_bench(
+        self,
+        callback: Callable[[BenchEvent], Any],
+        *,
+        script_name: str | None = None,
+        on_error: Optional[Callable[[Exception], Any]] = None,
+    ) -> Callable[[], bool]:
+        """Subscribe to typed bench-run lifecycle events. Returns an
+        unsubscribe callable.
+
+        Callback variant of :meth:`bench_events`: invokes *callback* with each
+        typed :class:`BenchEvent` (``RunStarted`` / ``ResultRecorded`` /
+        ``RunFinished``). When *script_name* is given, only that script's
+        events are delivered.
+
+        Parameters
+        ----------
+        on_error:
+            Optional callback invoked when the background listener task dies
+            due to an unhandled exception. Receives the exception instance.
+        """
+
+        async def _listen() -> None:
+            try:
+                async for evt in self.bench_events(script_name=script_name):
+                    if inspect.iscoroutinefunction(callback):
+                        await callback(evt)
+                    else:
+                        callback(evt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("on_bench listener crashed")
+                if on_error is not None:
+                    if inspect.iscoroutinefunction(on_error):
+                        await on_error(exc)
+                    else:
+                        on_error(exc)
+
+        task = asyncio.ensure_future(_listen())
+        return task.cancel
 
     def on_execution(
         self,

@@ -13,21 +13,21 @@ export class ScriptsClient {
   }
 
   async list(opts?: { signal?: AbortSignal }): Promise<Script[]> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<Script[]>(
       `${this.http.getBaseUrl()}/projects/${this.projectId}/scripts`, opts,
-    )).json();
+    );
   }
 
   async create(name: string, source: string, opts?: { signal?: AbortSignal }): Promise<Script> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<Script>(
       `${this.http.getBaseUrl()}/projects/${this.projectId}/scripts?name=${encodeURIComponent(name)}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source }), signal: opts?.signal },
-    )).json();
+    );
   }
 
   async get(name: string, opts?: { signal?: AbortSignal }): Promise<Script | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(this.path(name), opts)).json()
+      this.http.fetchJson<Script>(this.path(name), opts)
     );
   }
 
@@ -44,7 +44,7 @@ export class ScriptsClient {
 
   async getDraft(name: string, opts?: { signal?: AbortSignal }): Promise<DraftResponse | null> {
     return nullOn404(async () =>
-      (await this.http.fetchOk(this.path(name, 'draft'), opts)).json()
+      this.http.fetchJson<DraftResponse>(this.path(name, 'draft'), opts)
     );
   }
 
@@ -62,7 +62,7 @@ export class ScriptsClient {
     const url = new URL(this.path(name, 'graph'));
     if (opts?.version !== undefined) url.searchParams.set('version', String(opts.version));
     return nullOn404(async () =>
-      (await this.http.fetchOk(url.toString(), { signal: opts?.signal })).json()
+      this.http.fetchJson<ScriptGraph>(url.toString(), { signal: opts?.signal })
     );
   }
 
@@ -72,9 +72,9 @@ export class ScriptsClient {
    * `projects.duplicateScript(projectId, name)`.
    */
   async duplicate(name: string, opts?: { signal?: AbortSignal }): Promise<Script> {
-    return (await this.http.fetchOk(this.path(name, 'duplicate'), {
+    return this.http.fetchJson<Script>(this.path(name, 'duplicate'), {
       method: 'POST', signal: opts?.signal,
-    })).json();
+    });
   }
 
   /**
@@ -83,10 +83,10 @@ export class ScriptsClient {
    * `projects.moveScript(projectId, name, targetProjectId)`.
    */
   async moveTo(name: string, targetProjectId: number, opts?: { signal?: AbortSignal }): Promise<Script> {
-    return (await this.http.fetchOk(this.path(name, 'move'), {
+    return this.http.fetchJson<Script>(this.path(name, 'move'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target_project_id: targetProjectId }), signal: opts?.signal,
-    })).json();
+    });
   }
 
   /**

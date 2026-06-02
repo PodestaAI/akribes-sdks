@@ -1,6 +1,6 @@
 [project]
 name = "akribes"
-version = "0.21.17"
+version = "0.22.0"
 description = "Pythonic async client for the Akribes workflow server"
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,7 +31,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://akribes.ai"
 Repository = "https://github.com/PodestaAI/akribes-sdks"
-Documentation = "https://akribes.ai"
+Documentation = "https://akribes.ai/sdks/python/"
 Issues = "https://github.com/PodestaAI/akribes-sdks/issues"
 Changelog = "https://github.com/PodestaAI/akribes-sdks/blob/main/packages/akribes-sdk-python/CHANGELOG.md"
 

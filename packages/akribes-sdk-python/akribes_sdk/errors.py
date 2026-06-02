@@ -26,6 +26,9 @@ Hierarchy::
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 
 class AkribesError(Exception):
     """Base error for all Akribes SDK errors."""
@@ -327,6 +330,71 @@ class AlreadyExistsError(AkribesHTTPError):
 AkribesAlreadyExistsError = AlreadyExistsError
 
 
+class CaseFieldError:
+    """One per-field violation in a bench ``case_type_mismatch`` 400 body.
+
+    Mirrors the server's ``contracts::TypeMismatch`` (`{path, message}`) and
+    the TS SDK's ``CaseFieldError``."""
+
+    __slots__ = ("path", "message")
+
+    def __init__(self, path: str, message: str) -> None:
+        self.path = path
+        self.message = message
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return f"CaseFieldError(path={self.path!r}, message={self.message!r})"
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, CaseFieldError)
+            and other.path == self.path
+            and other.message == self.message
+        )
+
+
+class CaseTypeMismatchError(AkribesHTTPError):
+    """A bench case payload failed the server's contract validation (HTTP 400
+    ``{"error": "case_type_mismatch", "field_errors": [{path, message}]}``).
+
+    Raised by :meth:`Bench.create_case`, :meth:`Bench.patch_case`, and
+    :meth:`BenchRuns.promote_execution`. ``field_errors`` lets form UIs
+    highlight each offending leaf. Mirrors the TS SDK's
+    ``CaseTypeMismatchError``."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        field_errors: list[CaseFieldError] | None = None,
+        status: int | None = 400,
+        body_snippet: str | None = None,
+    ) -> None:
+        super().__init__(message, status=status, body_snippet=body_snippet)
+        self.field_errors = field_errors or []
+
+
+class JudgeContractError(AkribesHTTPError):
+    """A bench-run trigger failed the judge-contract pre-flight (HTTP 400
+    ``"Judge contract mismatch: …"``). The judge's ``inputs.{expected,actual}``
+    cannot read the workflow's ``outputs.*``.
+
+    Raised by :meth:`Bench.trigger_run`. ``breaks`` carries the parsed list of
+    incompatible fields when the server message includes them. Mirrors the TS
+    SDK's ``JudgeContractError``."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        breaks: list[str] | None = None,
+        status: int | None = 400,
+        body_snippet: str | None = None,
+    ) -> None:
+        super().__init__(message, status=status, body_snippet=body_snippet)
+        self.breaks = breaks or []
+
+
 class AkribesScriptError(ScriptError):
     """Deprecated alias for :class:`ScriptError`."""
 
@@ -337,9 +405,6 @@ class AkribesScriptError(ScriptError):
 # ────────────────────────────────────────────────────────────────────────
 # Input-validation helper (#1017) — mirrors TS `tryParseInputValidationErrors`.
 # ────────────────────────────────────────────────────────────────────────
-
-from dataclasses import dataclass
-from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -431,6 +496,9 @@ __all__ = [
     "ScriptInputMismatchError",
     "AlreadyExistsError",
     "AkribesAlreadyExistsError",
+    "CaseFieldError",
+    "CaseTypeMismatchError",
+    "JudgeContractError",
     "InputValidationEntry",
     "parse_input_validation_errors",
 ]

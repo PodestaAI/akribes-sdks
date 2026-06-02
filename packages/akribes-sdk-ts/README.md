@@ -68,7 +68,7 @@ const client = new AkribesClient({
 });
 ```
 
-See the [auth docs](https://akribes.ai/docs/authentication) for the full two-tier token model.
+See the [auth docs](https://akribes.ai/deployment/authentication/) for the full two-tier token model.
 
 ### Prefer `Authorization: Bearer` over `?token=…` (#789)
 
@@ -152,8 +152,9 @@ See [`examples/`](./examples) for runnable scripts:
 
 ## Documentation
 
+- SDK guide: <https://akribes.ai/sdks/typescript/>
+- Language guide: <https://akribes.ai/language/overview/>
 - Source mirror: <https://github.com/PodestaAI/akribes-sdks>
-- Language guide: <https://akribes.ai/docs>
 
 ## License
 

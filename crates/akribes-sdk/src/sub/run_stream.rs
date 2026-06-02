@@ -210,12 +210,10 @@ impl RunStream {
     /// `next()` and `poll_next()` after a successful receive.
     fn dispatch_callbacks(&self, evt: &WorkflowEvent) {
         match evt {
-            WorkflowEvent::AgentChunk { chunk, .. } => {
-                if !self.on_output_cbs.is_empty() {
-                    let v = serde_json::Value::String(chunk.clone());
-                    for cb in &self.on_output_cbs {
-                        cb(&v);
-                    }
+            WorkflowEvent::AgentChunk { chunk, .. } if !self.on_output_cbs.is_empty() => {
+                let v = serde_json::Value::String(chunk.clone());
+                for cb in &self.on_output_cbs {
+                    cb(&v);
                 }
             }
             WorkflowEvent::TaskEnd {
@@ -224,18 +222,16 @@ impl RunStream {
                 duration,
                 usage,
                 variant,
-            } => {
-                if !self.on_task_end_cbs.is_empty() {
-                    let payload = TaskEndPayload {
-                        task: task.clone(),
-                        output: output.clone(),
-                        duration: *duration,
-                        usage: usage.clone(),
-                        variant: *variant,
-                    };
-                    for cb in &self.on_task_end_cbs {
-                        cb(&payload);
-                    }
+            } if !self.on_task_end_cbs.is_empty() => {
+                let payload = TaskEndPayload {
+                    task: task.clone(),
+                    output: output.clone(),
+                    duration: *duration,
+                    usage: usage.clone(),
+                    variant: *variant,
+                };
+                for cb in &self.on_task_end_cbs {
+                    cb(&payload);
                 }
             }
             WorkflowEvent::Checkpoint {
@@ -245,30 +241,26 @@ impl RunStream {
                 schema,
                 timeout_secs,
                 trigger,
-            } => {
-                if !self.on_suspend_cbs.is_empty() {
-                    let payload = SuspendPayload {
-                        name: name.clone(),
-                        token: token.clone(),
-                        prompt: prompt.clone(),
-                        schema: schema.clone(),
-                        timeout_secs: *timeout_secs,
-                        trigger: trigger.clone(),
-                    };
-                    for cb in &self.on_suspend_cbs {
-                        cb(&payload);
-                    }
+            } if !self.on_suspend_cbs.is_empty() => {
+                let payload = SuspendPayload {
+                    name: name.clone(),
+                    token: token.clone(),
+                    prompt: prompt.clone(),
+                    schema: schema.clone(),
+                    timeout_secs: *timeout_secs,
+                    trigger: trigger.clone(),
+                };
+                for cb in &self.on_suspend_cbs {
+                    cb(&payload);
                 }
             }
-            WorkflowEvent::Error { message, kind, .. } => {
-                if !self.on_error_cbs.is_empty() {
-                    let payload = EngineErrorPayload {
-                        message: message.clone(),
-                        kind: kind.clone(),
-                    };
-                    for cb in &self.on_error_cbs {
-                        cb(&payload);
-                    }
+            WorkflowEvent::Error { message, kind, .. } if !self.on_error_cbs.is_empty() => {
+                let payload = EngineErrorPayload {
+                    message: message.clone(),
+                    kind: *kind,
+                };
+                for cb in &self.on_error_cbs {
+                    cb(&payload);
                 }
             }
             _ => {}
@@ -297,7 +289,7 @@ impl RunStream {
                         self.terminated = true;
                     }
                     WorkflowEvent::Error { message, kind, .. } => {
-                        self.final_error = Some((message.clone(), kind.clone()));
+                        self.final_error = Some((message.clone(), *kind));
                         self.terminated = true;
                     }
                     _ => {}
@@ -505,7 +497,7 @@ impl Stream for RunStream {
                         this.terminated = true;
                     }
                     WorkflowEvent::Error { message, kind, .. } => {
-                        this.final_error = Some((message.clone(), kind.clone()));
+                        this.final_error = Some((message.clone(), *kind));
                         this.terminated = true;
                     }
                     _ => {}

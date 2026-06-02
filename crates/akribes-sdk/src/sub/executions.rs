@@ -120,6 +120,25 @@ impl ExecutionsClient {
         self.c().get_opt(&url).await
     }
 
+    /// Per-task cost / token / duration breakdown for an execution
+    /// (`GET /executions/{id}/tasks`). Reads from the `execution_tasks`
+    /// table populated as `TaskEnd` events arrive, so callers don't have to
+    /// parse the event JSON to recover this data. Useful for monolith
+    /// workflows where there are no spawned children — every agent
+    /// invocation lives in `execution_tasks` keyed by `task_name`.
+    ///
+    /// 404 → `Ok(None)` (the execution doesn't exist or isn't accessible to
+    /// this token), matching `get` / `get_output`. Mirrors the TS SDK's
+    /// `executions.tasks`.
+    pub async fn tasks(&self, execution_id: &str) -> Result<Option<ExecutionTasksResponse>> {
+        let url = format!(
+            "{}/executions/{}/tasks",
+            self.inner.base_url,
+            urlencoding::encode(execution_id)
+        );
+        self.c().get_opt(&url).await
+    }
+
     /// Fetch only the output (status, error, result) for an execution.
     pub async fn get_output(&self, execution_id: &str) -> Result<Option<ExecutionOutput>> {
         let url = format!("{}/executions/{}/output", self.inner.base_url, execution_id);
@@ -182,7 +201,21 @@ impl ExecutionsClient {
         );
         let res = self.c().send(self.c().inner.http.get(&url)).await?;
         let body: serde_json::Value = crate::client::decode_json(res).await?;
-        Ok(body["markdown"].as_str().unwrap_or_default().to_string())
+        // The server contract is `{"markdown": "<string>"}`. A missing or
+        // non-string `markdown` field is a server-contract violation, not an
+        // "empty document" — surface it rather than silently returning "".
+        match body.get("markdown") {
+            Some(serde_json::Value::String(s)) => Ok(s.clone()),
+            other => Err(AkribesError::Other(format!(
+                "GET /documents/{}/markdown returned a malformed response: \
+                 expected a string `markdown` field, got {}",
+                document_id,
+                match other {
+                    None => "no `markdown` field".to_string(),
+                    Some(v) => format!("{v}"),
+                },
+            ))),
+        }
     }
 
     /// Get a presigned download URL for the original document file.

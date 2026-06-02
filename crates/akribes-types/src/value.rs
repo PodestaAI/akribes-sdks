@@ -258,7 +258,14 @@ impl Value {
                 );
                 serde_json::Value::Object(inner)
             }
-            Value::FatalError { message, kind, code, user_message, retry_after_ms, source } => {
+            Value::FatalError {
+                message,
+                kind,
+                code,
+                user_message,
+                retry_after_ms,
+                source,
+            } => {
                 // Wire shape: legacy keys (`FatalError`, `error_kind`) for
                 // SDK back-compat plus the richer envelope under
                 // `error_detail` so consumers can opt into code /
@@ -322,9 +329,11 @@ impl Value {
             serde_json::Value::Array(arr) => {
                 Value::List(arr.iter().map(Value::from_json).collect())
             }
-            serde_json::Value::Object(map) => {
-                Value::Object(map.iter().map(|(k, v)| (k.clone(), Value::from_json(v))).collect())
-            }
+            serde_json::Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), Value::from_json(v)))
+                    .collect(),
+            ),
         }
     }
 
@@ -340,11 +349,10 @@ impl Value {
     pub fn from_json_with_union_arms(v: &serde_json::Value, arm_names: &[&str]) -> Self {
         if let serde_json::Value::Object(map) = v {
             if let Some(serde_json::Value::String(kind)) = map.get("kind") {
-                if arm_names.iter().any(|n| *n == kind.as_str()) {
+                if arm_names.contains(&kind.as_str()) {
                     let mut stripped = map.clone();
                     stripped.remove("kind");
-                    let payload =
-                        Value::from_json(&serde_json::Value::Object(stripped));
+                    let payload = Value::from_json(&serde_json::Value::Object(stripped));
                     return Value::Union {
                         variant: kind.clone(),
                         payload: Box::new(payload),
@@ -387,7 +395,15 @@ impl Value {
     /// any other variant. Clones — use for cross-boundary handoff (engine
     /// event emission, DB serialization).
     pub fn as_fatal_detail(&self) -> Option<ErrorDetail> {
-        if let Value::FatalError { message, kind, code, user_message, retry_after_ms, source } = self {
+        if let Value::FatalError {
+            message,
+            kind,
+            code,
+            user_message,
+            retry_after_ms,
+            source,
+        } = self
+        {
             Some(ErrorDetail {
                 kind: *kind,
                 code: *code,
@@ -490,7 +506,12 @@ impl Hash for Value {
                 variant.hash(state);
                 payload.hash(state);
             }
-            Value::FatalError { message, kind, code, .. } => {
+            Value::FatalError {
+                message,
+                kind,
+                code,
+                ..
+            } => {
                 message.hash(state);
                 kind.hash(state);
                 code.hash(state);
@@ -532,7 +553,9 @@ impl fmt::Display for Value {
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", item)?;
                 }
                 write!(f, "]")
@@ -547,18 +570,15 @@ impl fmt::Display for Value {
                 let mut keys: Vec<&String> = map.keys().collect();
                 keys.sort();
                 for (i, k) in keys.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}: {}", k, map[*k])?;
                 }
                 write!(f, "}}")
             }
             Value::Unable(rec) => {
-                write!(
-                    f,
-                    "Unable({}: {})",
-                    rec.category.as_wire_str(),
-                    rec.reason
-                )
+                write!(f, "Unable({}: {})", rec.category.as_wire_str(), rec.reason)
             }
             Value::Union { variant, payload } => write!(f, "{}({})", variant, payload),
             Value::FatalError { message, .. } => write!(f, "{}", message),

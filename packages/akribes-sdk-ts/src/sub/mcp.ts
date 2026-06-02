@@ -33,15 +33,15 @@ export class McpClient {
   }
 
   async listServers(opts?: { signal?: AbortSignal }): Promise<McpServerSummary[]> {
-    return (await this.http.fetchOk(`${this.base()}/servers`, opts)).json();
+    return this.http.fetchJson<McpServerSummary[]>(`${this.base()}/servers`, opts);
   }
 
   async listTools(opts?: { signal?: AbortSignal }): Promise<McpToolSummary[]> {
-    return (await this.http.fetchOk(`${this.base()}/tools`, opts)).json();
+    return this.http.fetchJson<McpToolSummary[]>(`${this.base()}/tools`, opts);
   }
 
   async health(alias: string, opts?: { signal?: AbortSignal }): Promise<McpHealth> {
-    return (await this.http.fetchOk(`${this.base()}/servers/${encodeURIComponent(alias)}/health`, opts)).json();
+    return this.http.fetchJson<McpHealth>(`${this.base()}/servers/${encodeURIComponent(alias)}/health`, opts);
   }
 
   /**
@@ -49,10 +49,10 @@ export class McpClient {
    * pinned schema in the DB. Returns the new tool count.
    */
   async refresh(alias: string, opts?: { signal?: AbortSignal }): Promise<McpRefreshResult> {
-    return (await this.http.fetchOk(
+    return this.http.fetchJson<McpRefreshResult>(
       `${this.base()}/servers/${encodeURIComponent(alias)}/refresh`,
       { method: 'POST', signal: opts?.signal },
-    )).json();
+    );
   }
 
   /**

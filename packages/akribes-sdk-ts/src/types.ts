@@ -11,10 +11,23 @@ export type RegistryEvent =
   | { type: 'ScriptUpdated'; payload: { project_id: number; script_name: string; version_id: number; channel: string | null } }
   | { type: 'ScriptDeleted'; payload: { project_id: number; script_name: string } };
 
-export type EvalEvent =
-  | { type: 'RunStarted'; payload: { project_id: number; script_name: string; run: EvalRun } }
-  | { type: 'RunProgress'; payload: { project_id: number; script_name: string; run_id: number; completed_cases: number; total_cases: number | null; average_score: number | null; latest_result: EvalCaseReport | null } }
-  | { type: 'RunFinished'; payload: { project_id: number; script_name: string; run: EvalRun } };
+/** Live bench-run lifecycle events, broadcast on the project `/events`
+ *  stream as `HubEvent.Bench`. Adjacently tagged to match the server's
+ *  `BenchEvent` (`crates/akribes-server/src/models.rs`); all three variants
+ *  reuse the existing {@link BenchRun} / {@link BenchResult} row types. */
+export type BenchEvent =
+  | {
+      type: 'RunStarted';
+      payload: { project_id: number; script_name: string; run: BenchRun };
+    }
+  | {
+      type: 'ResultRecorded';
+      payload: { project_id: number; script_name: string; run_id: number; result: BenchResult };
+    }
+  | {
+      type: 'RunFinished';
+      payload: { project_id: number; script_name: string; run: BenchRun };
+    };
 
 export type HubEvent =
   | {
@@ -34,7 +47,7 @@ export type HubEvent =
       };
     }
   | { type: 'Registry'; payload: RegistryEvent }
-  | { type: 'Eval'; payload: EvalEvent };
+  | { type: 'Bench'; payload: BenchEvent };
 
 export type Project = {
   id: number;
@@ -438,72 +451,11 @@ export type ConvertResult = {
   filename?: string;
 };
 
-// ── Eval types ───────────────────────────────────────────────────────────────
-
-export type EvalSuite = {
-  id: number;
-  script_id: number;
-  name: string;
-  runner_url: string;
-  config: Record<string, unknown>;
-  auto_run_channels: string[];
-  created_at: string;
-};
-
-export type EvalRun = {
-  id: number;
-  suite_id: number;
-  script_id: number;
-  version_id: number | null;
-  channel: string | null;
-  source_hash: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
-  total_cases: number | null;
-  completed_cases: number;
-  average_score: number | null;
-  runner_run_id: string | null;
-  detail_url: string | null;
-  triggered_by: string | null;
-  started_at: string;
-  finished_at: string | null;
-  error: string | null;
-};
-
-export type EvalResult = {
-  id: number;
-  run_id: number;
-  case_id: string;
-  score: number | null;
-  status: string;
-  metadata: Record<string, unknown> | null;
-  execution_id: string | null;
-  created_at: string;
-};
-
-export type EvalCaseReport = {
-  case_id: string;
-  score: number | null;
-  status: string;
-  metadata: Record<string, unknown> | null;
-  execution_id: string | null;
-};
-
-export type EvalSuiteSummary = {
-  suite_id: number;
-  script_id: number;
-  script_name: string;
-  suite_name: string;
-  latest_run_id: number | null;
-  latest_run_at: string | null;
-  latest_avg_score: number | null;
-  prior_avg_score: number | null;
-};
-
 // ── Bench types ──────────────────────────────────────────────────────────────
 //
 // Mirrors the Rust SDK's `Bench`, `BenchRun`, `BenchResult`, `BenchCase`,
 // `CompareReport`, `DriftReport`, etc. from
-// `crates/akribes-sdk-rust/src/models.rs`. Timestamps are RFC3339 strings.
+// `crates/akribes-sdk/src/models.rs`. Timestamps are RFC3339 strings.
 
 /** Wire status of a bench run. */
 export type BenchStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
@@ -706,12 +658,34 @@ export type BenchRunTagSessionResponse = {
   mcp_session_id: string;
 };
 
-/** Page of bench-run events emitted by the JSON form of
- *  `GET /bench-runs/{id}/events`. The MCP layer polls this for incremental
- *  updates; live UIs use the SSE form (same path). */
-export type BenchRunEventsPage = {
-  events: unknown[];
-  complete?: boolean;
+/** Bench row looked up by numeric id via `GET /benches/{id}`, joined with
+ *  the owning project id + script name so callers can chain into
+ *  list_cases / list_runs without an N+1 project walk. Wider than
+ *  {@link Bench} — it carries `project_id` + `script_name` the bare
+ *  `(project, script)`-scoped read doesn't need to echo back. */
+export type BenchById = {
+  id: number;
+  project_id: number;
+  script_id: number;
+  script_name: string;
+  judge_script_id: number | null;
+  judge_channel: string;
+  config: BenchConfig;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Aggregated cost for one MCP session, returned by
+ *  `GET /mcp-sessions/{id}/cost`. Sits on the same `mcp_session_cost` table
+ *  the bench coordinator's finalize step writes to. A session with no
+ *  recorded cost rows still resolves (if a bench run tagged it) with
+ *  `total_cost_usd: 0` and an empty `breakdown`. */
+export type McpSessionCost = {
+  session_id: string;
+  total_cost_usd: number;
+  /** Free-form per-source cost breakdown blob. Shape is set by the
+   *  coordinator's finalize step; `{}` when no rows were recorded. */
+  breakdown: Record<string, unknown>;
 };
 
 // ── Bench request payloads ──────────────────────────────────────────────────
