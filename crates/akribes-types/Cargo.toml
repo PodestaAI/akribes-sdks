@@ -1,6 +1,6 @@
 [package]
 name = "akribes-types"
-version = "0.22.1"
+version = "0.22.2"
 edition = "2024"
 rust-version.workspace = true
 description = "Wire-level types shared by the Akribes SDK and core (events, values, AST shapes, errors)."
