@@ -1,6 +1,6 @@
 [package]
 name = "akribes-sdk"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2024"
 rust-version.workspace = true
 description = "Rust client SDK for the Akribes workflow server"
@@ -20,7 +20,7 @@ name = "akribes_sdk"
 # the full `akribes-core` (parser, analyzer, compiler, engine, providers);
 # extracting the wire envelope into its own crate (#TBD) means the SDK
 # now compiles without pulling any of those in.
-akribes-types = { path = "../akribes-types", version = "0.24.0" }
+akribes-types = { path = "../akribes-types", version = "0.25.0" }
 tracing = { workspace = true }
 reqwest = { workspace = true, features = ["stream", "multipart"] }
 serde = { workspace = true }
