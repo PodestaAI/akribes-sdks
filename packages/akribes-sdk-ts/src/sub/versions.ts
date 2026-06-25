@@ -13,8 +13,21 @@ export class VersionsClient {
     return this.http.scriptPath(this.projectId, scriptName, ...segments);
   }
 
-  async list(scriptName: string, opts?: { signal?: AbortSignal }): Promise<ScriptVersion[]> {
-    return this.http.fetchJson<ScriptVersion[]>(this.path(scriptName, 'versions'), opts);
+  /** List published versions, newest first.
+   *
+   * The server caps each page (default 50, max 500) and carries the full
+   * source blob per row, so long-lived scripts must paginate. Pass `limit` /
+   * `offset` to walk past the first page. */
+  async list(
+    scriptName: string,
+    opts?: { limit?: number; offset?: number; signal?: AbortSignal },
+  ): Promise<ScriptVersion[]> {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.offset != null) params.set('offset', String(opts.offset));
+    const qs = params.toString();
+    const url = `${this.path(scriptName, 'versions')}${qs ? `?${qs}` : ''}`;
+    return this.http.fetchJson<ScriptVersion[]>(url, { signal: opts?.signal });
   }
 
   async get(scriptName: string, versionId: number, opts?: { signal?: AbortSignal }): Promise<ScriptVersion | null> {

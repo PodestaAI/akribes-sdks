@@ -14,6 +14,7 @@ import { TokensClient } from './sub/tokens';
 import { EventsClient } from './sub/events';
 import { BenchClient } from './sub/bench';
 import { McpClient } from './sub/mcp';
+import { OrgConfigClient } from './sub/orgConfig';
 import { AkribesError } from './errors';
 import { connectSse } from './sse';
 import type { ConvertResult, HubEvent, EngineEvent } from './types';
@@ -131,6 +132,7 @@ export class AkribesClient {
   private _documents?: DocumentsClient;
   private _clients?: ClientsClient;
   private _tokens: TokensClient;
+  private _orgConfig: OrgConfigClient;
   private _events: EventsClient;
   private _bench?: BenchClient;
   private _mcp?: McpClient;
@@ -145,6 +147,7 @@ export class AkribesClient {
     this._projects = new ProjectsClient(this.http);
     this._state = new StateClient(this.http);
     this._tokens = new TokensClient(this.http);
+    this._orgConfig = new OrgConfigClient(this.http);
     // Hub events live above the project scope — a client without a
     // `projectId` still subscribes to the global stream (used by Studio's
     // top-level editor, which surfaces events across the user's projects).
@@ -202,6 +205,10 @@ export class AkribesClient {
   get documents(): DocumentsClient { return this.requireProjectScoped(this._documents, 'documents'); }
   get clients(): ClientsClient { return this.requireProjectScoped(this._clients, 'clients'); }
   get tokens(): TokensClient { return this._tokens; }
+  /** Organization-level configuration scope (MCP servers, secrets vault,
+   *  model policy, spend cap). Always available — org-scoped, takes an
+   *  `orgId` per call. */
+  get orgConfig(): OrgConfigClient { return this._orgConfig; }
   /** Hub event subscriptions. Always available — non-project-scoped clients
    *  receive the global stream (filtered to what the token can see). */
   get events(): EventsClient { return this._events; }

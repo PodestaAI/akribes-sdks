@@ -26,7 +26,7 @@ async function main() {
   const backend = new AkribesClient({ baseUrl, projectId, token: serviceToken });
   const minted = await backend.tokens.mint({
     user_email: "alice@acme.com",
-    scopes: { projects: projectId, role: "editor" },
+    scopes: { projects: [projectId], role: "editor" },
     expires_in: 8 * 3600,
     label: "web-session-example",
   });

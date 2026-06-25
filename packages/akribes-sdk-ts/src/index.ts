@@ -3,7 +3,7 @@ export { AkribesClient } from './client';
 export type { AkribesClientOptions } from './client';
 
 // Token safety
-export { assertTokenSafeInUrl } from './tokenSafety';
+export { assertTokenSafeInUrl, isScopedToken } from './tokenSafety';
 
 // Errors
 export { AkribesError, AkribesHttpError, AkribesAlreadyExistsError, AkribesAuthError, AkribesNotFoundError, AkribesRateLimitError, AkribesTransientHttpError, AkribesServerError500, AkribesBadGatewayError502, AkribesServiceUnavailableError503, AkribesGatewayTimeoutError504, recommendedBackoffMs, AkribesTransientError, AkribesFatalError, AkribesScriptError, AkribesTimeoutError, ScriptSchemaChangedError, ScriptInputMismatchError, CaseTypeMismatchError, JudgeContractError, tryParseInputValidationErrors, parseRetryAfter } from './errors';
@@ -22,6 +22,7 @@ export type {
   ScriptVersionResponse,
   ScriptChannel,
   RunResult,
+  RerunResult,
   ErrorKind,
   ExecutionStatus,
   ExecutionOutput,
@@ -72,6 +73,8 @@ export type {
   ContractWarning,
   PutDraftResponse,
   BreakingInterest,
+  BreakingChange,
+  DependentKind,
   DryRunResult,
   ScriptGraph,
   ScriptGraphNode,
@@ -92,6 +95,8 @@ export type {
   CostByScript,
   CostByVersion,
   CostByChannel,
+  CostByModel,
+  CostByTask,
   LoopStartEvent,
   LoopTurnEvent,
   LoopEndEvent,
@@ -122,7 +127,7 @@ export { ScriptsClient } from './sub/scripts';
 export { VersionsClient } from './sub/versions';
 export { ChannelsClient } from './sub/channels';
 export { ExecutionsClient } from './sub/executions';
-export type { ExecutionChildSummary, ExecutionTaskSummary, ExecutionTasksResponse } from './sub/executions';
+export type { ExecutionChildSummary, ExecutionTaskSummary, ExecutionTasksResponse, CancelResult, ListExecutionsOptions } from './sub/executions';
 export { ClientsClient, heartbeatBackoffMs } from './sub/clients';
 export type { HeartbeatStatus, ClientsClientOptions } from './sub/clients';
 export { TokensClient } from './sub/tokens';
@@ -130,7 +135,28 @@ export type { TokenScopes, MintTokenRequest } from './sub/tokens';
 export { EventsClient } from './sub/events';
 export { BenchClient } from './sub/bench';
 export { McpClient } from './sub/mcp';
-export type { McpHealth, McpDriftResult, McpRefreshResult } from './sub/mcp';
+export type {
+  McpHealth,
+  McpDriftResult,
+  McpRefreshResult,
+  McpSchemaDiff,
+  McpConfigRow,
+  McpConfigInput,
+  McpAuthKind,
+  McpConfigOrigin,
+} from './sub/mcp';
+export { OrgConfigClient } from './sub/orgConfig';
+export type {
+  OrgMcpConfigInput,
+  OrgSecretMeta,
+  OrgModelPolicy,
+  OrgSpendCap,
+  OrgUsage,
+  OrgUsageBreakdownRow,
+  OrgUsageDailyPoint,
+  OrgUsageLimits,
+  OrgUserUsage,
+} from './sub/orgConfig';
 
 // SSE utilities
 export { connectSse, parseSseMessage } from './sse';

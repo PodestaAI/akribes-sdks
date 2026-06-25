@@ -1357,3 +1357,148 @@ test("ValidationFailure event produces a validation_failure step with structured
   });
   expect(steps[0]!.visibility).toBe("inline");
 });
+
+// ── ToolApprovalPending / ToolApprovalResolved reducer tests ─────────────────
+
+function makeToolCallStartEvent(overrides: Record<string, unknown> = {}): HubEvent {
+  return {
+    type: "Execution",
+    payload: {
+      project_id: 1,
+      script_name: "test.akr",
+      event: {
+        type: "ToolCallStart",
+        payload: {
+          task_name: "do_it",
+          tool_name: "delete_file",
+          server_name: "fs",
+          input: { path: "/tmp/x" },
+          tool_use_id: "tu_1",
+          ...overrides,
+        },
+      },
+    },
+  };
+}
+
+function makeToolApprovalPendingEvent(overrides: Record<string, unknown> = {}): HubEvent {
+  return {
+    type: "Execution",
+    payload: {
+      project_id: 1,
+      script_name: "test.akr",
+      event: {
+        type: "ToolApprovalPending",
+        payload: {
+          execution_id: null,
+          node_id: null,
+          token: "exec-1-approval-tu_1",
+          tool_ref: "fs.delete_file",
+          args: { path: "/tmp/x" },
+          ...overrides,
+        },
+      },
+    },
+  };
+}
+
+test("ToolApprovalPending flips the open tool_call step to pending + attaches token", () => {
+  const lineRef = makeActiveLineRef(7);
+  const nodeRef = makeActiveNodeRef(3);
+
+  const r1 = reduceExecutionEvent([], makeToolCallStartEvent(), lineRef, nodeRef);
+  expect(r1.steps).toHaveLength(1);
+  expect(r1.steps[0]!.status).toBe("running");
+
+  const r2 = reduceExecutionEvent(r1.steps, makeToolApprovalPendingEvent(), lineRef, nodeRef);
+  // No NEW step — the existing tool_call row is updated in place.
+  expect(r2.steps).toHaveLength(1);
+  const step = r2.steps[0]!;
+  expect(step.type).toBe("tool_call");
+  expect(step.status).toBe("pending");
+  expect(step.visibility).toBe("inline");
+  expect(step.toolApproval).toEqual({
+    token: "exec-1-approval-tu_1",
+    toolRef: "fs.delete_file",
+    args: { path: "/tmp/x" },
+  });
+  // Side effect carries everything the host modal needs.
+  expect(r2.effects.toolApprovalPending).toEqual({
+    token: "exec-1-approval-tu_1",
+    toolRef: "fs.delete_file",
+    serverName: "fs",
+    toolName: "delete_file",
+    args: { path: "/tmp/x" },
+  });
+});
+
+test("ToolApprovalPending synthesizes a pending row when no open tool_call exists", () => {
+  const lineRef = makeActiveLineRef(1);
+  const nodeRef = makeActiveNodeRef(0);
+  const { steps, effects } = reduceExecutionEvent([], makeToolApprovalPendingEvent(), lineRef, nodeRef);
+  expect(steps).toHaveLength(1);
+  expect(steps[0]!.type).toBe("tool_call");
+  expect(steps[0]!.status).toBe("pending");
+  expect(steps[0]!.toolApproval?.token).toBe("exec-1-approval-tu_1");
+  expect(effects.toolApprovalPending?.toolName).toBe("delete_file");
+});
+
+test("approve flow: ToolApprovalResolved(approved) → ToolCallEnd settles the step to success", () => {
+  const lineRef = makeActiveLineRef(7);
+  const nodeRef = makeActiveNodeRef(3);
+  let steps = reduceExecutionEvent([], makeToolCallStartEvent(), lineRef, nodeRef).steps;
+  steps = reduceExecutionEvent(steps, makeToolApprovalPendingEvent(), lineRef, nodeRef).steps;
+
+  const resolved: HubEvent = {
+    type: "Execution",
+    payload: {
+      project_id: 1,
+      script_name: "test.akr",
+      event: { type: "ToolApprovalResolved", payload: { token: "exec-1-approval-tu_1", approved: true } },
+    },
+  };
+  steps = reduceExecutionEvent(steps, resolved, lineRef, nodeRef).steps;
+  expect(steps[0]!.status).toBe("running");
+  expect(steps[0]!.toolApproval).toBeUndefined();
+
+  const end: HubEvent = {
+    type: "Execution",
+    payload: {
+      project_id: 1,
+      script_name: "test.akr",
+      event: {
+        type: "ToolCallEnd",
+        payload: { task_name: "do_it", tool_name: "delete_file", output: { ok: true }, duration: { secs: 0, nanos: 5_000_000 } },
+      },
+    },
+  };
+  steps = reduceExecutionEvent(steps, end, lineRef, nodeRef).steps;
+  expect(steps).toHaveLength(1);
+  expect(steps[0]!.status).toBe("success");
+  expect(steps[0]!.toolApproval).toBeUndefined();
+  expect(steps[0]!.toolOutput).toEqual({ ok: true });
+});
+
+test("reject flow: ToolCallEnd with error output settles a still-pending approval step to error", () => {
+  const lineRef = makeActiveLineRef(7);
+  const nodeRef = makeActiveNodeRef(3);
+  let steps = reduceExecutionEvent([], makeToolCallStartEvent(), lineRef, nodeRef).steps;
+  steps = reduceExecutionEvent(steps, makeToolApprovalPendingEvent(), lineRef, nodeRef).steps;
+  // Engine emits ToolCallEnd with an { error } output directly on rejection.
+  const end: HubEvent = {
+    type: "Execution",
+    payload: {
+      project_id: 1,
+      script_name: "test.akr",
+      event: {
+        type: "ToolCallEnd",
+        payload: { task_name: "do_it", tool_name: "delete_file", output: { error: "rejected by approver" }, duration: { secs: 0, nanos: 0 } },
+      },
+    },
+  };
+  steps = reduceExecutionEvent(steps, end, lineRef, nodeRef).steps;
+  expect(steps).toHaveLength(1);
+  expect(steps[0]!.status).toBe("error");
+  expect(steps[0]!.toolApproval).toBeUndefined();
+  expect(steps[0]!.content).toBe("delete_file rejected");
+});

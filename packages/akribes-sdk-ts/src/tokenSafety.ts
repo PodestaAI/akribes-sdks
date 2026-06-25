@@ -11,8 +11,36 @@
  * It throws synchronously so misuse is caught at the call site, not
  * silently leaked at request time.
  */
+/**
+ * Return `true` when `token` looks like a DB-stored **scoped** token
+ * (`akribes_tk_…`, or the legacy `aura_tk_…`) rather than the raw secret
+ * half of a long-lived service token.
+ *
+ * This is the non-throwing companion to {@link assertTokenSafeInUrl}: it
+ * lets callers branch on a precondition the SDK otherwise only signals by
+ * throwing. For example, decide whether a token is safe to pass in a
+ * `?token=` query string, whether to surface an "expires" affordance in a
+ * UI, or whether the caller accidentally configured a service-token secret
+ * where a scoped token was expected — all without a `try/catch`:
+ *
+ * ```ts
+ * if (isScopedToken(token)) {
+ *   url.searchParams.set('token', token); // short-lived, log-leakage OK
+ * } else {
+ *   headers['Authorization'] = `Bearer ${token}`; // header-only
+ * }
+ * ```
+ *
+ * Note this is a *shape* check on the prefix, not a validity check: it does
+ * not contact the server, and a well-formed-but-revoked scoped token still
+ * returns `true`.
+ */
+export function isScopedToken(token: string): boolean {
+  return token.startsWith('akribes_tk_') || token.startsWith('aura_tk_');
+}
+
 export function assertTokenSafeInUrl(token: string): void {
-  if (token.startsWith('akribes_tk_') || token.startsWith('aura_tk_')) {
+  if (isScopedToken(token)) {
     return;
   }
   throw new Error(

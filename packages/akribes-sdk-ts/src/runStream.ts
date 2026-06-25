@@ -503,8 +503,8 @@ class RunStreamImpl implements RunStream {
     // The SDK doesn't bundle a pricing table — we report null when we have no
     // real usage signal (mock or no taskEnd usage block). When usage is real,
     // `byModel` carries the total (input + output) token count per model so
-    // callers can compute their own USD cost; `totalUsd` stays 0 until the
-    // server-side pricing-aware variant lands (Phase 4).
+    // callers can compute their own USD cost; `totalUsd` stays 0 for now.
+    // TODO: server-side pricing-aware variant pending.
     const cost = (!usageObserved || mockObserved)
       ? null
       : { totalUsd: 0, byModel: byModelTokens };

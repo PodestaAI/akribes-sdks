@@ -29,18 +29,20 @@ async function main() {
       inputs: { brief: "hello" },
     });
 
-    // Print every agent chunk as it arrives.
-    run.on.output((chunk) => process.stdout.write(chunk.chunk));
+    // Print every agent chunk as it arrives. The output callback receives the
+    // chunk string directly (the full event is the optional second argument).
+    run.on.output((chunk) => process.stdout.write(chunk));
     run.on.error((err) => console.error("\n[error]", err.message));
 
     // Iterate the typed event stream too.
     for await (const evt of run) {
-      if (evt.kind === "task_end") {
+      if (evt.kind === "taskEnd") {
         console.log(`\n[task done: ${evt.task}]`);
       }
     }
 
-    const result = await run.output();
+    // `output` is a promise property that resolves with the workflow result.
+    const result = await run.output;
     console.log("\nFinal:", result);
   } finally {
     client.destroy();

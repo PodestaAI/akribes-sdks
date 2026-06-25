@@ -176,6 +176,32 @@ pub enum Value {
 }
 
 impl Value {
+    /// The akribes surface type name for this runtime value.
+    ///
+    /// Mirrors `akribes_core::analyzer::Type::display()` so runtime error
+    /// messages report the same clean names users see at compile time
+    /// (`str`, `int`, `decimal`, `bool`, `list`, `document`, `object`,
+    /// `json`, ...) instead of the Rust debug form of the inner value
+    /// (e.g. `Int(42)`). Use this when interpolating a value into a
+    /// user-facing diagnostic.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::String(_) => "str",
+            Value::Int(_) => "int",
+            Value::Decimal(_) => "decimal",
+            Value::Bool(_) => "bool",
+            Value::List(_) => "list",
+            Value::Document(_) => "document",
+            Value::AgentRef(_) => "agent",
+            Value::Object(_) => "object",
+            Value::Unable(_) => "unable",
+            Value::Union { .. } => "union",
+            Value::FatalError { .. } => "error",
+            Value::Json(_) => "json",
+            Value::Null => "null",
+        }
+    }
+
     /// Project this Value to its canonical wire-format JSON shape.
     ///
     /// Alias for [`Value::to_json`] — kept as a named entry point so
@@ -585,5 +611,33 @@ impl fmt::Display for Value {
             Value::AgentRef(data) => write!(f, "<agent:{}>", data.name),
             Value::Json(j) => write!(f, "{}", j),
         }
+    }
+}
+
+#[cfg(test)]
+mod type_name_tests {
+    use super::*;
+
+    #[test]
+    fn type_name_reports_clean_surface_names() {
+        // Surface names must match `analyzer::Type::display()` and never
+        // leak the Rust debug form of the inner value.
+        assert_eq!(Value::String("hi".into()).type_name(), "str");
+        assert_eq!(Value::Int(42).type_name(), "int");
+        assert_eq!(Value::Decimal(1.5).type_name(), "decimal");
+        assert_eq!(Value::Bool(true).type_name(), "bool");
+        assert_eq!(Value::List(vec![]).type_name(), "list");
+        assert_eq!(Value::Document("doc".into()).type_name(), "document");
+        assert_eq!(
+            Value::Object(std::collections::HashMap::new()).type_name(),
+            "object"
+        );
+        assert_eq!(Value::Json(serde_json::json!({"a": 1})).type_name(), "json");
+        assert_eq!(Value::Null.type_name(), "null");
+
+        // The whole point: an int never renders as `Int(42)`.
+        let msg = format!("got {}", Value::Int(42).type_name());
+        assert!(msg.contains("int"));
+        assert!(!msg.contains("Int("));
     }
 }

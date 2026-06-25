@@ -37,6 +37,7 @@ from akribes_sdk._retry import ExponentialBackoff, RetryPolicy
 from akribes_sdk.client import AkribesClient
 from akribes_sdk.ingest_handle import IngestHandle, IngestEvent
 from akribes_sdk.script_type import ScriptType
+from akribes_sdk._token_safety import assert_token_safe_in_url, is_scoped_token
 from akribes_sdk.errors import (
     AkribesConnectionError,
     AkribesConversionError,
@@ -219,6 +220,9 @@ __all__ = [
     "ProjectHandle",
     "ScriptHandle",
     "ScriptType",
+    # Token safety
+    "assert_token_safe_in_url",
+    "is_scoped_token",
     # Retry policy
     "RetryPolicy",
     "ExponentialBackoff",

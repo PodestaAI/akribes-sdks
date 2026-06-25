@@ -28,10 +28,17 @@ export class ChannelsClient {
     });
   }
 
-  async move(scriptName: string, channelName: string, versionId: number, opts?: { force?: boolean; signal?: AbortSignal }): Promise<void> {
+  async move(scriptName: string, channelName: string, versionId: number, opts?: { force?: boolean; reason?: string; signal?: AbortSignal }): Promise<void> {
     await this.http.fetchOk(this.path(scriptName, 'channels', channelName), {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version_id: versionId, ...(opts?.force != null && { force: opts.force }) }), signal: opts?.signal,
+      body: JSON.stringify({
+        version_id: versionId,
+        ...(opts?.force != null && { force: opts.force }),
+        // WS1: required (≥20 chars) server-side when force-rolling-back over
+        // a unified contract break. Persisted to force_publish_audit.
+        ...(opts?.reason != null && { reason: opts.reason }),
+      }),
+      signal: opts?.signal,
     });
   }
 }

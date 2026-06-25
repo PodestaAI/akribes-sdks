@@ -2,7 +2,7 @@ import type { HttpClient } from '../http';
 import { nullOn404 } from '../http';
 import { AkribesTransientError, AkribesFatalError, AkribesScriptError, AkribesTimeoutError, ScriptSchemaChangedError } from '../errors';
 import type { ContractState } from './clients';
-import type { RunResult, ExecutionStatus, ExecutionOutput, ExecutionEvents, S3DocumentRef, ScriptGraph, ScriptCost, ProjectCost } from '../types';
+import type { RunResult, RerunResult, ExecutionStatus, ExecutionOutput, ExecutionEvents, S3DocumentRef, ScriptGraph, ScriptCost, ProjectCost } from '../types';
 import { createRunStream, type RunStream, type RunStreamEventsSource, type RunStreamOptions } from '../runStream';
 
 /** Summary of a child execution spawned via the `spawn_child_execution`
@@ -40,6 +40,73 @@ export type ExecutionTasksResponse = {
   execution_id: string;
   tasks: ExecutionTaskSummary[];
 };
+
+/** Outcome of a cancel request. Distinguishes "stopped now" from "stop
+ *  requested, winding down elsewhere". See {@link ExecutionsClient.cancel}. */
+export type CancelResult = {
+  /** True when the server signalled an in-process run to stop immediately. */
+  cancelled: boolean;
+  /** The execution's status after the request: `'cancelling'` when a durable
+   *  stop was requested but the owning replica hasn't exited yet, a terminal
+   *  status (`'cancelled'`/`'completed'`/`'failed'`) on a post-finish race, or
+   *  `undefined` for the script-scoped `cancelRun` shape. */
+  status?: string;
+};
+
+/** Parse the JSON envelope returned by the cancel endpoints. Tolerates the
+ *  `{ cancelled: number }` shape from `cancelRun` (count of stopped runs) and
+ *  the `{ cancelled: bool, status }` shape from `cancel`. */
+async function parseCancelResult(res: Response): Promise<CancelResult> {
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    // No/empty body (older server) — treat as a best-effort success.
+    return { cancelled: true };
+  }
+  if (!body || typeof body !== 'object') return { cancelled: false };
+  const b = body as Record<string, unknown>;
+  const cancelledRaw = b.cancelled;
+  const cancelled = typeof cancelledRaw === 'number'
+    ? cancelledRaw > 0
+    : cancelledRaw === true;
+  const status = typeof b.status === 'string' ? b.status : undefined;
+  return { cancelled, status };
+}
+
+/** Filters for the run-history list endpoints. All optional and
+ *  AND-combined; `since`/`until` are ISO 8601 timestamps matched against
+ *  `started_at`. */
+export type ListExecutionsOptions = {
+  status?: string;
+  channel?: string;
+  /** `failure_mode` discriminator (see migration 20260515000000). */
+  failureMode?: string;
+  /** Inclusive lower bound on `started_at`. */
+  since?: string;
+  /** Inclusive upper bound on `started_at`. */
+  until?: string;
+  limit?: number;
+  offset?: number;
+  signal?: AbortSignal;
+};
+
+/** Build the query string shared by the script- and project-level run-history
+ *  list endpoints. `scriptName` is only meaningful for the project-level call. */
+function buildListExecutionsQuery(
+  options?: ListExecutionsOptions & { scriptName?: string },
+): string {
+  const params = new URLSearchParams();
+  if (options?.status) params.set('status', options.status);
+  if (options?.channel) params.set('channel', options.channel);
+  if (options?.failureMode) params.set('failure_mode', options.failureMode);
+  if (options?.since) params.set('since', options.since);
+  if (options?.until) params.set('until', options.until);
+  if (options?.scriptName) params.set('script_name', options.scriptName);
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  if (options?.offset != null) params.set('offset', String(options.offset));
+  return params.toString();
+}
 
 /** Default timeout for {@link ExecutionsClient.await} — 5 minutes. */
 const DEFAULT_AWAIT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -91,7 +158,7 @@ export class ExecutionsClient {
       signal?: AbortSignal;
       breakpointLines?: number[];
       /** When true, MCP tool calls execute in dry-run mode (no side effects).
-       *  Server-side enforcement lands in Phase 4 (Task 38) — flag passes through today. */
+       *  Server-side enforcement pending — flag passes through today. */
       dryRunTools?: boolean;
     },
   ): Promise<RunResult> {
@@ -170,17 +237,30 @@ export class ExecutionsClient {
     );
   }
 
+  /** List a script's run history, newest first.
+   *
+   * Filters (all optional, AND-combined): `status`, `channel`, `failureMode`,
+   * and a `since`/`until` `started_at` date range (ISO 8601). The server caps
+   * the page (default 50, max 200); pass `limit`/`offset` to paginate. */
   async list(
     scriptName: string,
-    options?: { status?: string; channel?: string; limit?: number; offset?: number; signal?: AbortSignal },
+    options?: ListExecutionsOptions,
   ): Promise<ExecutionStatus[]> {
-    const params = new URLSearchParams();
-    if (options?.status) params.set('status', options.status);
-    if (options?.channel) params.set('channel', options.channel);
-    if (options?.limit != null) params.set('limit', String(options.limit));
-    if (options?.offset != null) params.set('offset', String(options.offset));
-    const qs = params.toString();
+    const qs = buildListExecutionsQuery(options);
     const url = `${this.path(scriptName, 'executions')}${qs ? '?' + qs : ''}`;
+    return this.http.fetchJson<ExecutionStatus[]>(url, { signal: options?.signal });
+  }
+
+  /** Project-level run history across every script, newest first.
+   *
+   * Same filters as {@link list}, plus an optional `scriptName` narrowing.
+   * Powers the project-wide "Runs" view where the operator hasn't picked a
+   * script yet. */
+  async listForProject(
+    options?: ListExecutionsOptions & { scriptName?: string },
+  ): Promise<ExecutionStatus[]> {
+    const qs = buildListExecutionsQuery(options);
+    const url = `${this.http.getBaseUrl()}/projects/${this.projectId}/executions${qs ? '?' + qs : ''}`;
     return this.http.fetchJson<ExecutionStatus[]>(url, { signal: options?.signal });
   }
 
@@ -205,19 +285,33 @@ export class ExecutionsClient {
     );
   }
 
-  async cancel(executionId: string, opts?: { signal?: AbortSignal }): Promise<void> {
-    await this.http.fetchOk(`${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}`, {
+  /**
+   * Cancel a specific execution by ID.
+   *
+   * Returns the server's real outcome so callers can be honest about whether
+   * the run actually stopped. `cancelled` is `true` only when THIS server held
+   * the in-memory cancellation token and signalled it; on a multi-replica
+   * deployment the owning replica may be another process, in which case the
+   * server records a durable `cancel_requested` flag, returns
+   * `{ cancelled: false, status: 'cancelling' }`, and the run winds down on the
+   * owner's next claim-loop poll. Callers should poll {@link get} until the row
+   * reaches a terminal state rather than claiming instant success.
+   */
+  async cancel(executionId: string, opts?: { signal?: AbortSignal }): Promise<CancelResult> {
+    const res = await this.http.fetchOk(`${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}`, {
       method: 'DELETE', signal: opts?.signal,
     });
+    return parseCancelResult(res);
   }
 
-  async cancelRun(scriptName: string, opts?: { signal?: AbortSignal }): Promise<void> {
-    await this.http.fetchOk(this.path(scriptName, 'run'), { method: 'DELETE', signal: opts?.signal });
+  async cancelRun(scriptName: string, opts?: { signal?: AbortSignal }): Promise<CancelResult> {
+    const res = await this.http.fetchOk(this.path(scriptName, 'run'), { method: 'DELETE', signal: opts?.signal });
+    return parseCancelResult(res);
   }
 
   /** Cross-SDK naming alias for {@link cancelRun}. Mirrors the Python SDK's
    *  `cancel_all`. Refs #109 (item 3: method-naming consistency). */
-  async cancelAll(scriptName: string, opts?: { signal?: AbortSignal }): Promise<void> {
+  async cancelAll(scriptName: string, opts?: { signal?: AbortSignal }): Promise<CancelResult> {
     return this.cancelRun(scriptName, opts);
   }
 
@@ -356,6 +450,25 @@ export class ExecutionsClient {
       }),
       signal: opts.signal,
     });
+  }
+
+  /**
+   * Re-run a previous execution with its stored inputs.
+   *
+   * The server re-submits the original workflow with the exact inputs the
+   * prior run used. Document/S3-input runs are re-referenced by their retained
+   * `doc_<uuid>` handles; if a referenced document has been purged the call
+   * rejects with a `422` ("inputs no longer available") rather than failing
+   * mid-spawn. Source resolution prefers the run's original `version_id`,
+   * falling back to its channel when that version is gone.
+   *
+   * Returns the new execution id (and `rerun_of`, the id it was re-run from).
+   */
+  async rerun(executionId: string, opts?: { signal?: AbortSignal }): Promise<RerunResult> {
+    return this.http.fetchJson<RerunResult>(
+      `${this.http.getBaseUrl()}/executions/${encodeURIComponent(executionId)}/rerun`,
+      { method: 'POST', signal: opts?.signal },
+    );
   }
 
   /** Get the compiled execution DAG for a script. If versionId is omitted, uses the draft. */

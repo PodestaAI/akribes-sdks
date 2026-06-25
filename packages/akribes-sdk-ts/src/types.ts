@@ -209,10 +209,43 @@ export type BreakingInterest = {
   mismatch: SchemaMismatch;
 };
 
+/** The dependent class a {@link BreakingChange} affects. Mirrors the Rust
+ *  `akribes_core::contracts::DependentKind` enum, which serializes with its
+ *  variant name. */
+export type DependentKind = 'SdkClient' | 'UseImport' | 'Judge' | 'BenchCase';
+
+/** One broken dependent from the unified contract check. Mirrors
+ *  `akribes_core::contracts::BreakingChange` — returned by the publish
+ *  dry-run (`DryRunResult.unified_breaks`), the live publish 409
+ *  (`{ error: "contract_break", breaks }`), and the channel-rollback 409. */
+export type BreakingChange = {
+  dependent_kind: DependentKind;
+  /** Stable identifier (e.g. row id) for the dependent. */
+  dependent_id: string;
+  /** Human-readable label rendered in error messages. */
+  dependent_label: string;
+  /** Concrete locator, e.g. `"outputs.score (int) removed"`. */
+  what_broke: string;
+  /** One-line suggested fix, or `null` if none applies. */
+  suggested_fix?: string | null;
+  /** App route to the dependent. */
+  link_path: string;
+};
+
 export type DryRunResult = {
   dry_run: true;
+  /** Legacy `client_interests` break count (back-compat). The UI gates its
+   *  red/green state on {@link total_break_count} instead. */
   would_break: number;
   breaking_interests: BreakingInterest[];
+  /** Unified contract breaks (SDK clients, judges, bench cases, `use`
+   *  imports). Present on WS1+ servers; older servers omit it — treat
+   *  `undefined` as `[]`. */
+  unified_breaks?: BreakingChange[];
+  /** Union total: legacy interests + unified dependents. The truthful
+   *  "would this publish break anything" count. Older servers omit it;
+   *  fall back to `would_break` when absent. */
+  total_break_count?: number;
 };
 
 export type ScriptVersion = {
@@ -247,6 +280,13 @@ export type RunResult = {
   since_id?: number;
 };
 
+/** Result of {@link ExecutionsClient.rerun}: the freshly-spawned execution
+ *  plus the id of the execution it was re-run from. */
+export type RerunResult = RunResult & {
+  /** The execution id this re-run reproduced. */
+  rerun_of: string;
+};
+
 // #1296: legacy umbrella `ServerError` retained for back-compat; new producers emit one of the four status-specific kinds.
 export type ErrorKind = 'RateLimit' | 'AuthError' | 'TokenLimit' | 'ServerError' | 'ServerError500' | 'BadGateway502' | 'ServiceUnavailable503' | 'GatewayTimeout504' | 'NetworkError' | 'ParseError' | 'Cancelled' | 'ScriptError';
 
@@ -267,6 +307,11 @@ export type ExecutionStatus = {
   channel: string | null;
   error: string | null;
   error_kind: ErrorKind | null;
+  /** Failure-mode discriminator (migration 20260515000000). `null` on success
+   *  or for older servers; one of the documented values on a classified
+   *  failure (e.g. `provider_rate_limited`, `workflow_timeout`). Returned on
+   *  the run-history list + single-execution read. */
+  failure_mode?: string | null;
   result: unknown;
   /** When S3 is enabled: `{ inputName: DocumentRef }`. Without S3: `{ inputName: markdownString }`. */
   documents: Record<string, string | DocumentRef> | null;
@@ -332,17 +377,48 @@ export type CostByScript = {
   unknown_cost_executions: number;
 };
 
+/** Per-model cost rollup. Joins through `execution_tasks` (the only place the
+ *  model name is normalized to a column), so `task_calls` counts agent
+ *  invocations, not whole executions. `model` is `null` for rows the server
+ *  couldn't attribute to a named model. */
+export type CostByModel = {
+  model: string | null;
+  task_calls: number;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cached_input_tokens: number;
+};
+
+/** Per-task cost rollup (script-scoped only). Joins through `execution_tasks`,
+ *  grouped by `task_name`, so `task_calls` counts per-task agent invocations
+ *  across every execution of the script in the window. */
+export type CostByTask = {
+  task_name: string;
+  task_calls: number;
+  total_cost_usd: number;
+  avg_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+};
+
 export type ScriptCost = {
   total_executions: number;
   total_cost_usd: number;
   avg_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cached_input_tokens?: number;
   /** Executions whose model wasn't in the server's pricing table — their tokens
    *  are still counted but they contribute `0` to cost totals. */
   unknown_cost_executions: number;
   by_version: CostByVersion[];
   by_channel: CostByChannel[];
+  /** Per-model breakdown (joins through `execution_tasks`). Optional for
+   *  back-compat with pre-WS4 servers that didn't emit it. */
+  by_model?: CostByModel[];
+  /** Per-task breakdown. Script-scoped only. Optional for back-compat. */
+  by_task?: CostByTask[];
 };
 
 export type ProjectCost = {
@@ -352,9 +428,13 @@ export type ProjectCost = {
   avg_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cached_input_tokens?: number;
   unknown_cost_executions: number;
   by_script: CostByScript[];
   by_channel: CostByChannel[];
+  /** Per-model breakdown (joins through `execution_tasks`). Optional for
+   *  back-compat with pre-WS4 servers that didn't emit it. */
+  by_model?: CostByModel[];
 };
 
 export type ExecutionEvents = {
@@ -770,6 +850,17 @@ export type ContractPreview = {
 
 export type ToolCallStartEvent = { task_name: string; tool_name: string; server_name: string; input: unknown; tool_use_id?: string };
 export type ToolCallEndEvent = { task_name: string; tool_name: string; output: unknown; duration_ms: number; error?: string; tool_use_id?: string };
+/** A destructive MCP tool invocation is awaiting operator approval. The engine
+ *  suspends the run on a resume channel keyed by `token`; resume via
+ *  `executions.resume(id, token, null, { approve })` (optionally with
+ *  `args_override`). `tool_ref` is the qualified `server.tool` name. */
+export type ToolApprovalPendingEvent = {
+  execution_id?: string | null;
+  node_id?: number | null;
+  token: string;
+  tool_ref: string;
+  args: unknown;
+};
 export type McpServerDegradedEvent = { alias: string; reason: string };
 export type McpServerRecoveredEvent = { alias: string };
 
@@ -780,6 +871,15 @@ export type McpServerSummary = {
   is_registry: boolean;
   status: 'connected' | 'degraded' | 'offline' | 'pinned_offline';
   tool_count: number;
+  /** True when a DB config row exists for this alias (a DB server, or a
+   *  knob-override layer for a script-declared one). */
+  has_config?: boolean;
+  /** True when an auth secret is configured (write-only — never returned). */
+  auth_configured?: boolean;
+  /** Effective timeout in seconds (override > script default). */
+  timeout_secs?: number;
+  /** Effective server-level approval gate. */
+  approval_required?: boolean;
 };
 
 export type McpToolSummary = {

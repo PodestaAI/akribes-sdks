@@ -1,0 +1,8 @@
+{
+  // Typecheck the published examples against the real SDK surface so they
+  // can't silently drift out of sync with the API (the build tsconfig only
+  // covers `src/**`, and the main config is polluted by intentionally-loose
+  // test-file types — so neither gated the examples before).
+  "extends": "./tsconfig.json",
+  "include": ["examples/**/*.ts"]
+}

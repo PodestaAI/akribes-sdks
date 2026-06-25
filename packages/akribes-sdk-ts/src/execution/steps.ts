@@ -171,6 +171,19 @@ export type ExecutionStep = {
   serverName?: string;
   /** Input passed to the tool call. */
   toolInput?: Record<string, any>;
+  /** Set on a `tool_call` step that is blocked awaiting operator approval
+   *  (from a `ToolApprovalPending` event). Carries the resume `token` the
+   *  caller must pass to `executions.resume`, the qualified `tool_ref`, and
+   *  the proposed `args`. Cleared (the field is dropped) once the matching
+   *  `ToolCallStart`/`ToolCallEnd` arrives after the approver resolves it. */
+  toolApproval?: {
+    /** Resume channel token — pass to `executions.resume(id, token, ...)`. */
+    token: string;
+    /** Qualified `server.tool` reference the engine wants to invoke. */
+    toolRef: string;
+    /** Proposed arguments the approver can inspect (and optionally edit). */
+    args?: unknown;
+  };
   /** Output returned by the tool call. */
   toolOutput?: Record<string, any>;
   /** Structured type of the task result value, as reported by the engine on TaskEnd. */
@@ -307,6 +320,17 @@ export type ReducerSideEffects = {
   refreshHistory?: boolean;
   breakpoint?: { nodeId: number; token: string; envSnapshot: Record<string, any>; line: number };
   breakpointResumed?: boolean;
+  /** A destructive MCP tool call is blocked awaiting operator approval. The
+   *  caller opens an approval prompt and resumes with
+   *  `executions.resume(id, token, null, { approve })`. */
+  toolApprovalPending?: {
+    token: string;
+    toolRef: string;
+    /** Qualified ref split for display: server before the first `.`, tool after. */
+    serverName?: string;
+    toolName: string;
+    args?: unknown;
+  };
 };
 
 /**
@@ -1119,6 +1143,94 @@ export function reduceExecutionEvent(
       steps = [...prev, step];
       break;
     }
+    case 'ToolApprovalPending': {
+      // A destructive MCP tool call is blocked on operator approval. The
+      // engine already emitted a `ToolCallStart` for this dispatch (so a
+      // 'running' tool_call step exists); flip that step to a visible
+      // "awaiting approval" state and attach the resume token. We also raise
+      // the `toolApprovalPending` side effect so the host opens its modal.
+      const token = typeof evPayload.token === 'string' ? evPayload.token : '';
+      const toolRef = typeof evPayload.tool_ref === 'string' ? evPayload.tool_ref : '';
+      const args = evPayload.args;
+      // `tool_ref` is the qualified `server.tool`; split for display.
+      const dot = toolRef.indexOf('.');
+      const serverName = dot > 0 ? toolRef.slice(0, dot) : undefined;
+      const toolName = dot > 0 ? toolRef.slice(dot + 1) : toolRef;
+      effects.toolApprovalPending = { token, toolRef, serverName, toolName, args };
+      // Find the most-recent open tool_call step for this tool so the
+      // approval state lands on the row the upcoming ToolCallEnd will close.
+      // Match by qualified ref first, then by bare tool name as a fallback
+      // (older servers emit only the bare name on ToolCallStart).
+      let openIdx = -1;
+      for (let i = prev.length - 1; i >= 0; i -= 1) {
+        const s = prev[i];
+        if (!s || s.type !== 'tool_call' || s.status !== 'running') continue;
+        const qualified = s.serverName ? `${s.serverName}.${s.toolName}` : s.toolName;
+        if (qualified === toolRef || s.toolName === toolName) { openIdx = i; break; }
+      }
+      if (openIdx !== -1) {
+        const cur = prev[openIdx]!;
+        const updated = [...prev];
+        updated[openIdx] = {
+          ...cur,
+          content: `Awaiting approval: ${toolRef}`,
+          status: 'pending',
+          visibility: 'inline',
+          toolApproval: { token, toolRef, args },
+          seq: wireSeq ?? cur.seq,
+          serverTs: wireServerTs ?? cur.serverTs,
+        };
+        steps = updated;
+      } else {
+        // No matching open tool_call (e.g. replay edge or a server that
+        // suppressed ToolCallStart). Synthesize a pending row so the UI
+        // still shows the gate and the operator can resolve it.
+        steps = [...prev, {
+          id,
+          line: activeLineRef.current || 0,
+          type: 'tool_call',
+          content: `Awaiting approval: ${toolRef}`,
+          status: 'pending',
+          timestamp,
+          seq: wireSeq,
+          serverTs: wireServerTs,
+          toolName,
+          serverName,
+          toolInput: args && typeof args === 'object' ? (args as Record<string, any>) : undefined,
+          toolApproval: { token, toolRef, args },
+          nodeId: activeNodeRef.current ?? undefined,
+          visibility: 'inline',
+        }];
+      }
+      break;
+    }
+    case 'ToolApprovalResolved': {
+      // Audit companion (#857). Clear the pending badge on the matching
+      // tool_call step. On rejection the step becomes an error; on approval
+      // it returns to 'running' until the ToolCallEnd settles it.
+      const token = typeof evPayload.token === 'string' ? evPayload.token : '';
+      const approved = evPayload.approved === true;
+      let idx = -1;
+      for (let i = prev.length - 1; i >= 0; i -= 1) {
+        const s = prev[i];
+        if (s && s.type === 'tool_call' && s.toolApproval?.token === token) { idx = i; break; }
+      }
+      if (idx === -1) { steps = prev; break; }
+      const cur = prev[idx]!;
+      const { toolApproval: _dropped, ...rest } = cur;
+      const updated = [...prev];
+      updated[idx] = {
+        ...rest,
+        status: approved ? 'running' : 'error',
+        content: approved
+          ? `Calling ${cur.toolName}...`
+          : `Rejected: ${cur.toolApproval?.toolRef ?? cur.toolName}`,
+        seq: wireSeq ?? cur.seq,
+        serverTs: wireServerTs ?? cur.serverTs,
+      };
+      steps = updated;
+      break;
+    }
     case 'SubScript': {
       // Cross-script `call(...)` envelope (akribes-core EngineEvent::SubScript,
       // PR #360). Each event wraps ONE inner sub-engine event; one logical
@@ -1439,8 +1551,15 @@ export function reduceExecutionEvent(
       break;
     }
     case 'ToolCallEnd': {
+      // Match the open tool_call row. A row still `running` is the common
+      // case; a row left in `pending`/`error` carrying a `toolApproval` is
+      // the approval-gate case (the engine emits ToolCallEnd directly on a
+      // rejection without a preceding 'running' transition).
       const toolStepIndex = prev.findLastIndex(
-        (s: ExecutionStep) => s.type === 'tool_call' && s.toolName === evPayload.tool_name && s.status === 'running'
+        (s: ExecutionStep) =>
+          s.type === 'tool_call'
+          && s.toolName === evPayload.tool_name
+          && (s.status === 'running' || s.toolApproval != null)
       );
       const toolStep = toolStepIndex >= 0 ? prev[toolStepIndex] : undefined;
       if (toolStep) {
@@ -1448,11 +1567,19 @@ export function reduceExecutionEvent(
         const durationMs = evPayload.duration
           ? evPayload.duration.secs * 1000 + evPayload.duration.nanos / 1000000
           : undefined;
+        // A rejected approval emits `{ error: ... }` as the output; surface
+        // that as an error status rather than a misleading "completed".
+        const out = evPayload.output;
+        const rejected = !!out && typeof out === 'object' && !Array.isArray(out)
+          && 'error' in (out as Record<string, unknown>);
+        const { toolApproval: _dropApproval, ...restStep } = toolStep;
         updated[toolStepIndex] = {
-          ...toolStep,
-          status: 'success' as const,
-          content: `${evPayload.tool_name} completed`,
-          toolOutput: evPayload.output,
+          ...restStep,
+          status: rejected ? ('error' as const) : ('success' as const),
+          content: rejected
+            ? `${evPayload.tool_name} rejected`
+            : `${evPayload.tool_name} completed`,
+          toolOutput: out,
           duration: durationMs,
           seq: wireSeq ?? toolStep.seq,
           serverTs: wireServerTs ?? toolStep.serverTs,

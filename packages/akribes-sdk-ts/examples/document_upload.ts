@@ -30,12 +30,12 @@ async function main() {
 
   const client = new AkribesClient({ baseUrl, projectId, token });
   try {
-    const { documentId } = await client.documents.ingest(filename, data);
-    console.log(`ingested as ${documentId}`);
+    const { document_id } = await client.documents.ingest(filename, data);
+    console.log(`ingested as ${document_id}`);
 
     const [executionId, output] = await client.executions.runAndAwait(
       scriptName,
-      { inputs: { doc: documentId } },
+      { inputs: { doc: document_id } },
     );
     console.log("execution:", executionId);
     console.log("status:   ", output.status);
