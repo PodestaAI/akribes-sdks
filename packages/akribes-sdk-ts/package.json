@@ -1,6 +1,6 @@
 {
   "name": "akribes",
-  "version": "0.25.1",
+  "version": "0.25.2",
   "description": "TypeScript / Bun client for the Akribes workflow server. Browser-safe ESM.",
   "license": "MIT",
   "homepage": "https://akribes.ai",

@@ -1,6 +1,6 @@
 [project]
 name = "akribes"
-version = "0.25.1"
+version = "0.25.2"
 description = "Pythonic async client for the Akribes workflow server"
 readme = "README.md"
 license = {text = "MIT"}
