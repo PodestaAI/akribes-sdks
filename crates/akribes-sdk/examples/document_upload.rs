@@ -57,9 +57,12 @@ async fn main() -> Result<()> {
     let ingest = client
         .project(project_id)
         .documents()
-        .ingest(&filename, bytes)
+        .ingest(&filename, &bytes)
         .await?;
-    println!("[document_upload] ingested as {}", ingest.document_id);
+    println!(
+        "[document_upload] ingested as {} (deduplicated: {})",
+        ingest.document_id, ingest.deduplicated
+    );
 
     // 2. Run the workflow with the document reference.
     let (execution_id, output) = client

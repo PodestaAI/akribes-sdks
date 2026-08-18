@@ -294,7 +294,13 @@ impl ExecutionsClient {
             let output = self.get_output(execution_id).await?;
             if let Some(output) = output {
                 match output.status.as_str() {
-                    "completed" => return Ok(output),
+                    // `suspended` is a *terminal* await outcome (#P10): the
+                    // engine parked the run at a checkpoint and will not
+                    // advance without an external resume/cancel. Returning
+                    // `Ok` here (rather than spinning to the deadline) hands
+                    // the caller the full record so it can branch on
+                    // `status` — completed vs. suspended — itself.
+                    "completed" | "suspended" => return Ok(output),
                     "failed" | "cancelled" => {
                         let msg = output.error.clone().unwrap_or_default();
                         let eid = Some(execution_id.to_string());

@@ -529,6 +529,11 @@ export type ConvertResult = {
    * document input on subsequent runs to skip re-upload + reconversion. */
   document_id?: string;
   filename?: string;
+  /** `true` when the server served this conversion from its content-addressed
+   * conversion cache (identical bytes already converted under the identical
+   * backend recipe) and therefore invoked no OCR/Docling backend. Absent on
+   * servers predating the conversion cache. */
+  cache_hit?: boolean;
 };
 
 // ── Bench types ──────────────────────────────────────────────────────────────
@@ -543,8 +548,12 @@ export type BenchStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canc
 /** Wire status of a single per-case result row. */
 export type BenchResultStatus = 'ok' | 'workflow_failed' | 'judge_failed' | 'skipped' | 'cached';
 
-/** Per-case compare flag emitted by `GET /bench-runs/{a}/compare/{b}`. */
+/** Per-case score compare flag emitted by `GET /bench-runs/{a}/compare/{b}`. */
 export type CompareFlag = 'improved' | 'regressed' | 'unchanged' | 'missing_a' | 'missing_b';
+
+/** Per-case cost compare flag — the cost-dimension counterpart to
+ *  {@link CompareFlag}. `cost_regressed` means run B spent more on the case. */
+export type CostCompareFlag = 'cost_regressed' | 'cost_improved' | 'cost_unchanged';
 
 /** A single typed value flowing through a bench case (input value, expected
  *  output, ground truth, judge score, workflow output). Shape is determined
@@ -618,8 +627,15 @@ export type BenchRun = {
   notes: string | null;
   mcp_session_id?: string | null;
   /** Subset of case IDs this run targets. `null` / absent = every case in
-   *  the bench. */
+   *  the bench. For a `sampled` run the coordinator writes the drawn case
+   *  ids here so the row records exactly which cases ran. */
   case_filter?: string[] | null;
+  /** Case-selection mode. `"full"` (default) ran every case (subject to
+   *  `case_filter`); `"sampled"` ran a random subset of `sample_size`
+   *  cases. */
+  mode?: string;
+  /** Requested sample size K for a `"sampled"` run. Absent for full runs. */
+  sample_size?: number | null;
   /** Mean headline_score across cases with `status='ok'|'cached'`. Populated
    *  by the list-runs aggregate query; bare GET-run leaves it absent. */
   mean_headline_score?: number | null;
@@ -698,14 +714,36 @@ export type CompareCase = {
   delta: number | null;
   /** One of {@link CompareFlag} or any future server-emitted string. */
   flag: CompareFlag | string;
+  /** Run A's cost for this case in USD (0 when absent in run A). */
+  cost_a: number;
+  /** Run B's cost for this case in USD (0 when absent in run B). */
+  cost_b: number;
+  /** `cost_b - cost_a`. Positive ⇒ run B is a cost regression. */
+  cost_delta: number;
+  /** One of {@link CostCompareFlag} or any future server-emitted string. */
+  cost_flag: CostCompareFlag | string;
 };
 
 export type CompareAggregate = {
   mean_score_delta: number;
+  /** Total cost delta across all cases, `sum(cost_b) - sum(cost_a)` in USD. */
   cost_delta_usd: number;
   n_regressed: number;
   n_improved: number;
   n_unchanged: number;
+  /** Mean per-case cost delta in USD (`cost_delta_usd / case_count`). */
+  mean_cost_delta: number;
+  /** Cost delta as a percentage of run A's total cost; `null` when run A
+   *  spent nothing. */
+  cost_delta_pct: number | null;
+  /** `true` when run B costs meaningfully more than run A overall. */
+  cost_regression: boolean;
+  /** Number of cases that cost more in run B. */
+  n_cost_regressed: number;
+  /** Number of cases that cost less in run B. */
+  n_cost_improved: number;
+  /** Number of cases whose cost was unchanged within epsilon. */
+  n_cost_unchanged: number;
 };
 
 export type CompareReport = {
@@ -814,6 +852,10 @@ export type TriggerBenchRunRequest = {
   notes?: string;
   /** Subset of case IDs. Empty / omitted = run every case. */
   case_ids?: string[];
+  /** Case-selection mode: `"full"` (default when omitted) or `"sampled"`. */
+  mode?: string;
+  /** Number of cases to draw when `mode` is `"sampled"` (must be >= 1). */
+  sample_size?: number;
 };
 
 // ── Signature + contract-preview wire shapes ────────────────────────────────

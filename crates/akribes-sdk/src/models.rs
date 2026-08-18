@@ -202,6 +202,12 @@ pub struct ConvertResult {
     pub document_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// `true` when the server served this conversion from its content-addressed
+    /// conversion cache (identical bytes already converted under the identical
+    /// backend recipe) and therefore invoked no OCR/Docling backend. Defaults
+    /// to `false` against servers predating the conversion cache.
+    #[serde(default)]
+    pub cache_hit: bool,
 }
 
 /// S3 document reference — either a pre-signed URL or bucket/key with temp credentials.
@@ -298,6 +304,11 @@ pub struct ExecutionStatus {
     /// spawned. `None` when `parent_execution_id` is `None`.
     #[serde(default)]
     pub parent_node_id: Option<String>,
+    /// Distinct models the execution actually ran, in first-seen order
+    /// (e.g. `["claude-haiku-4-5"]`). The server populates this from the
+    /// execution's `TaskEnd` usage; `None` on older servers that omit it.
+    #[serde(default)]
+    pub models_used: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -380,6 +391,7 @@ pub(crate) fn engine_event_type_name(evt: &EngineEvent) -> &'static str {
         EngineEvent::NodeEnd { .. } => "NodeEnd",
         EngineEvent::Breakpoint { .. } => "Breakpoint",
         EngineEvent::BreakpointResumed { .. } => "BreakpointResumed",
+        EngineEvent::BatchQueued { .. } => "BatchQueued",
         EngineEvent::ToolCallStart { .. } => "ToolCallStart",
         EngineEvent::ToolCallEnd { .. } => "ToolCallEnd",
         EngineEvent::McpServerDegraded { .. } => "McpServerDegraded",
@@ -403,6 +415,7 @@ pub(crate) fn engine_event_type_name(evt: &EngineEvent) -> &'static str {
         // hit served from `task_cache_entries`). Carried on the wire so
         // the Studio + bench can attribute "this task was free this run".
         EngineEvent::TaskCacheHit { .. } => "TaskCacheHit",
+        EngineEvent::TaskEscalated { .. } => "TaskEscalated",
         EngineEvent::LLMResponse { .. } => "LLMResponse",
         EngineEvent::SubScriptSpawned { .. } => "SubScriptSpawned",
         EngineEvent::SubScriptResult { .. } => "SubScriptResult",
@@ -420,6 +433,8 @@ pub(crate) fn engine_event_type_name(evt: &EngineEvent) -> &'static str {
         EngineEvent::RuntimeStderr { .. } => "RuntimeStderr",
         EngineEvent::RuntimeEnd { .. } => "RuntimeEnd",
         EngineEvent::RuntimeError { .. } => "RuntimeError",
+        EngineEvent::HttpCallStart { .. } => "HttpCallStart",
+        EngineEvent::HttpCallEnd { .. } => "HttpCallEnd",
     }
 }
 
@@ -606,10 +621,24 @@ pub enum HubEvent {
 
 // ── Draft response ──────────────────────────────────────────────────────
 
+// Mirrors akribes_server::models::PutDraftResponse (the `diagnostics` /
+// `analyzer_version` half — the SDK deliberately ignores the server struct's
+// `inputs` / `type_defs` / `updated_at` fields it has never surfaced).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PutDraftResponse {
     #[serde(default)]
     pub schema_warnings: Vec<ContractWarning>,
+    /// Server-analyzer verdict for the just-saved source — the same
+    /// diagnostics `scripts().check()` produces. The save is never blocked
+    /// by these: a source that fails to parse still persists and comes back
+    /// with an `AKRIBES-E-PARSE` error here. `#[serde(default)]` for wire
+    /// back-compat: old servers omit the key and it decodes to an empty vec.
+    #[serde(default)]
+    pub diagnostics: Vec<ApiDiagnostic>,
+    /// `CARGO_PKG_VERSION` of the analyzing server, so clients can detect
+    /// verdict drift between builds. `None` against old servers that omit it.
+    #[serde(default)]
+    pub analyzer_version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -618,6 +647,51 @@ pub struct ContractWarning {
     pub client_name: String,
     pub channel: String,
     pub mismatch: SchemaMismatch,
+}
+
+// ── Script check ─────────────────────────────────────────────────────────
+
+// Mirrors akribes_server::models::ApiDiagnostic — one parser/analyzer
+// diagnostic in API form, shared by `POST .../check` and draft-save verdicts.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ApiDiagnostic {
+    /// Stable diagnostic code (e.g. `AKRIBES-E-TYPE-MISMATCH`). Parse
+    /// failures always carry exactly `AKRIBES-E-PARSE`; empty string for
+    /// legacy analyzer diagnostics that predate code assignment.
+    pub code: String,
+    /// `"error"` | `"warning"` | `"info"`.
+    pub severity: String,
+    pub message: String,
+    /// 1-based start line.
+    pub line: u32,
+    /// 1-based start column.
+    pub col: u32,
+    #[serde(default)]
+    pub end_line: Option<u32>,
+    #[serde(default)]
+    pub end_col: Option<u32>,
+}
+
+// Mirrors akribes_server::models::CheckResponse — the verdict from
+// `POST /projects/{id}/scripts/{name}/check`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CheckResponse {
+    /// True when no `"error"`-severity diagnostics were produced.
+    pub ok: bool,
+    #[serde(default)]
+    pub diagnostics: Vec<ApiDiagnostic>,
+    /// `CARGO_PKG_VERSION` of the serving akribes-server — lets clients
+    /// detect verdict drift between server builds.
+    pub analyzer_version: String,
+}
+
+// Mirrors akribes_server::models::CheckRequest — the body for
+// `POST /projects/{id}/scripts/{name}/check`. Borrows `source` for the
+// request; `None` (serialized as `{}`) tells the server to check the draft.
+#[derive(Serialize)]
+pub(crate) struct CheckRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<&'a str>,
 }
 
 // ── Publish dry-run ─────────────────────────────────────────────────────
@@ -885,6 +959,12 @@ pub(crate) struct RunRequest {
 #[derive(Serialize)]
 pub(crate) struct CreateProjectRequest<'a> {
     pub name: &'a str,
+    /// Optional organization the project should belong to, identified by
+    /// `organizations.name`. Only honored for wildcard/admin identities; an
+    /// org-bound user token inherits the caller's org automatically. Omitted
+    /// from the wire when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization_name: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -932,9 +1012,20 @@ pub struct McpDriftResult {
     pub reason: Option<String>,
 }
 
+// Mirrors akribes_server's `PUT /draft` request body. `require_parse` /
+// `format` are opt-in flags (Task 1): when false they are skipped so the body
+// stays byte-for-byte `{ "source": ... }` for old servers and the plain
+// `save` path.
 #[derive(Serialize)]
 pub(crate) struct PutDraftRequest<'a> {
     pub source: &'a str,
+    /// Reject the save with HTTP 400 `invalid_source` when the source fails to
+    /// parse (nothing persisted) instead of storing it with diagnostics.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub require_parse: bool,
+    /// Server-side canonical-format the source before persisting it.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub format: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -1031,6 +1122,31 @@ pub struct UploadResult {
     pub document_id: String,
     pub filename: String,
     pub content_hash: String,
+    pub conversion_status: ConversionStatus,
+}
+
+/// SDK-level outcome of [`crate::sub::documents::DocumentsClient::ingest`].
+///
+/// **Not a direct wire mirror.** The server has no `deduplicated` field — it is
+/// derived client-side by the hash-first ingest flow: `true` when the content
+/// hash already existed server-side (the `claim` hit, so no bytes were
+/// uploaded), `false` when a fresh multipart upload was performed. `conversion`
+/// is the blob's [`ConversionStatus`] at the moment `ingest` returned (always a
+/// non-`Failed` state — `ingest` surfaces `Failed` as an error). Consumed by
+/// the akribes-mcp document tools (MCP server overhaul, Phase 4).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct IngestResult {
+    pub document_id: String,
+    pub deduplicated: bool,
+    pub conversion: ConversionStatus,
+}
+
+/// Minimal projection of `GET /documents/{id}` used by
+/// [`crate::sub::documents::DocumentsClient::status`]. The full metadata shape
+/// is [`DocumentMeta`]; `status()` only needs the conversion state, so this
+/// deserializes just that field and ignores the rest.
+#[derive(Deserialize)]
+pub(crate) struct DocumentStatusWire {
     pub conversion_status: ConversionStatus,
 }
 
@@ -1159,6 +1275,14 @@ pub struct BenchRun {
     pub mcp_session_id: Option<String>,
     #[serde(default)]
     pub case_filter: Option<Vec<String>>,
+    /// Case-selection mode. `"full"` (default) ran every case (subject to
+    /// `case_filter`); `"sampled"` ran a random subset of `sample_size`
+    /// cases, with the drawn ids recorded in `case_filter`.
+    #[serde(default = "default_bench_run_mode")]
+    pub mode: String,
+    /// Requested sample size K for a `"sampled"` run. `None` for full runs.
+    #[serde(default)]
+    pub sample_size: Option<i32>,
     /// Mean headline score across completed (`status='ok' OR 'cached'`) results
     /// in this run. Populated by the list-runs aggregate query; bare
     /// GET-single-run + coordinator inserts leave it `None`.
@@ -1175,6 +1299,21 @@ pub struct BenchRun {
     /// may be absent rather than serialised as `0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_breakdown: Option<std::collections::HashMap<String, i64>>,
+    /// Pass threshold used to derive the correctness breakdown (from the bench
+    /// `config` JSON key `pass_threshold`, default 50). Populated by the
+    /// list-runs / get-run aggregate queries; older servers omit it (→ `None`).
+    #[serde(default)]
+    pub pass_threshold: Option<f64>,
+    /// Cases scoring `>= pass_threshold` (correctness, not execution health —
+    /// distinct from `ok_cases`).
+    #[serde(default)]
+    pub passed: Option<i64>,
+    /// Cases with a score `< pass_threshold`.
+    #[serde(default)]
+    pub failed: Option<i64>,
+    /// Cases with no score (execution or judge failed).
+    #[serde(default)]
+    pub inconclusive: Option<i64>,
     /// Name of the judge script whose version produced this run. Joined in by
     /// `get_run` and `list_runs` on the server so a caller can deep-link to
     /// the judge's source at `judge_version_id` without an N+1 lookup. Empty
@@ -1200,8 +1339,30 @@ pub struct BenchResult {
     #[serde(default)]
     pub headline_score: Option<f64>,
     pub status: String,
+    /// Correctness verdict: "pass" | "fail" | "error" (score vs the bench's
+    /// pass_threshold). Distinct from `status`, which is execution health.
+    /// Populated by the `/bench-runs/{id}/results` read path; older servers
+    /// omit it (→ `None`).
+    #[serde(default)]
+    pub verdict: Option<String>,
+    /// Combined per-case cost: `workflow_cost_usd + judge_cost_usd`. The two
+    /// halves are surfaced separately below (both `None` on cache-hit rows).
     #[serde(default)]
     pub cost_usd: f64,
+    /// Workflow execution's `cost_usd` — the workflow half of `cost_usd`.
+    /// Populated by the `/bench-runs/{id}/results` read path; older servers
+    /// omit it (→ `None`).
+    #[serde(default)]
+    pub workflow_cost_usd: Option<f64>,
+    /// Judge execution's `cost_usd` — the judge half of `cost_usd`.
+    /// Populated by the `/bench-runs/{id}/results` read path; older servers
+    /// omit it (→ `None`).
+    #[serde(default)]
+    pub judge_cost_usd: Option<f64>,
+    /// The case's human label (`executions.case_name`). Populated by the
+    /// `/bench-runs/{id}/results` read path; older servers omit it (→ `None`).
+    #[serde(default)]
+    pub case_name: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<i32>,
     #[serde(default)]
@@ -1265,15 +1426,53 @@ pub struct CompareCase {
     pub delta: Option<f64>,
     /// `improved | regressed | unchanged | missing_a | missing_b`.
     pub flag: String,
+    /// Run A's cost for this case in USD (0.0 when absent in run A).
+    #[serde(default)]
+    pub cost_a: f64,
+    /// Run B's cost for this case in USD (0.0 when absent in run B).
+    #[serde(default)]
+    pub cost_b: f64,
+    /// `cost_b - cost_a`. Positive ⇒ run B is a cost regression.
+    #[serde(default)]
+    pub cost_delta: f64,
+    /// `cost_regressed | cost_improved | cost_unchanged` — the cost-dimension
+    /// counterpart to `flag`. Defaults to `cost_unchanged` for servers that
+    /// predate the cost dimension.
+    #[serde(default = "default_cost_flag")]
+    pub cost_flag: String,
+}
+
+fn default_cost_flag() -> String {
+    "cost_unchanged".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CompareAggregate {
     pub mean_score_delta: f64,
+    /// Total cost delta across all cases, `sum(cost_b) - sum(cost_a)` in USD.
     pub cost_delta_usd: f64,
     pub n_regressed: i32,
     pub n_improved: i32,
     pub n_unchanged: i32,
+    /// Mean per-case cost delta in USD (`cost_delta_usd / case_count`).
+    #[serde(default)]
+    pub mean_cost_delta: f64,
+    /// Cost delta as a percentage of run A's total cost; `None` when run A
+    /// spent nothing.
+    #[serde(default)]
+    pub cost_delta_pct: Option<f64>,
+    /// `true` when run B costs meaningfully more than run A overall.
+    #[serde(default)]
+    pub cost_regression: bool,
+    /// Number of cases that cost more in run B.
+    #[serde(default)]
+    pub n_cost_regressed: i32,
+    /// Number of cases that cost less in run B.
+    #[serde(default)]
+    pub n_cost_improved: i32,
+    /// Number of cases whose cost was unchanged within epsilon.
+    #[serde(default)]
+    pub n_cost_unchanged: i32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1366,6 +1565,12 @@ pub struct PromoteExecutionRequest {
     pub name: Option<String>,
 }
 
+/// Serde default for [`BenchRun::mode`] — a wire payload from an older
+/// server that predates the column deserializes as a full run.
+fn default_bench_run_mode() -> String {
+    "full".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct TriggerBenchRunRequest {
     pub channel: String,
@@ -1374,6 +1579,12 @@ pub struct TriggerBenchRunRequest {
     /// Optional subset of case IDs. `None` or empty array → run every case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case_ids: Option<Vec<String>>,
+    /// Case-selection mode: `"full"` (default when omitted) or `"sampled"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Number of cases to draw when `mode = "sampled"` (must be ≥ 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_size: Option<i32>,
 }
 
 /// A typed event from the live SSE bench-run stream
@@ -1402,4 +1613,59 @@ pub enum BenchRunEvent {
     Lagged { dropped: u64 },
     /// The run reached a terminal status; the stream ends after this.
     Terminal { status: String },
+}
+
+#[cfg(test)]
+mod create_project_request_tests {
+    use super::CreateProjectRequest;
+
+    /// With no org, the request body is just `{ "name": ... }` — the server's
+    /// org-inference (from the caller's token) still applies.
+    #[test]
+    fn omits_organization_name_when_none() {
+        let body = CreateProjectRequest {
+            name: "demo",
+            organization_name: None,
+        };
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v, serde_json::json!({ "name": "demo" }));
+    }
+
+    /// With an org, it rides on the wire as `organization_name` (C2) so a
+    /// wildcard identity can stamp the project's org.
+    #[test]
+    fn includes_organization_name_when_set() {
+        let body = CreateProjectRequest {
+            name: "demo",
+            organization_name: Some("acme"),
+        };
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "name": "demo", "organization_name": "acme" }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod execution_status_tests {
+    use super::ExecutionStatus;
+
+    #[test]
+    fn execution_status_carries_models_used() {
+        // Present → surfaced.
+        let with = r#"{"id":"e1","project_id":1,"script_name":"s","status":"completed",
+                       "cost_usd":0.001,"models_used":["claude-haiku-4-5"]}"#;
+        let es: ExecutionStatus = serde_json::from_str(with).expect("deserialize");
+        assert_eq!(
+            es.models_used,
+            Some(serde_json::json!(["claude-haiku-4-5"]))
+        );
+
+        // Absent (old server) → None, still deserializes.
+        let without =
+            r#"{"id":"e2","project_id":1,"script_name":"s","status":"completed","cost_usd":null}"#;
+        let es2: ExecutionStatus = serde_json::from_str(without).expect("deserialize");
+        assert_eq!(es2.models_used, None);
+    }
 }

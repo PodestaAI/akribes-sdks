@@ -109,21 +109,26 @@ impl DocumentsClient {
         self.c().post_multipart::<UploadResult>(&url, form).await
     }
 
-    /// Convenience: hash locally, call [`claim`](Self::claim), fall back to
-    /// [`upload`](Self::upload) on miss. On hit where the blob is still
-    /// `Converting`, polls the claim endpoint until the status is terminal or
-    /// the configured ingest poll timeout elapses (default 300 s, see
+    /// Hash-first ingest: SHA-256 the bytes locally, [`claim`](Self::claim),
+    /// and only [`upload`](Self::upload) on a miss. Returns an [`IngestResult`]
+    /// whose `deduplicated` flag reports whether the server already had these
+    /// bytes (claim hit, no upload) or a fresh upload was performed.
+    ///
+    /// On a hit where the blob is still `Converting`/`Pending`, polls the claim
+    /// endpoint until the status is terminal or the configured ingest poll
+    /// timeout elapses (default 300 s, see
     /// [`crate::AkribesClientBuilder::ingest_poll_timeout`]). Returns
     /// `AkribesError::Transient` on timeout so the caller can retry. If the
     /// server reports `Failed` (after its own inline auto-reconvert has given
     /// up), returns `AkribesError::Other`.
-    pub async fn ingest(&self, filename: &str, bytes: Vec<u8>) -> Result<UploadResult> {
-        let content_hash = hex::encode(Sha256::digest(&bytes));
+    pub async fn ingest(&self, filename: &str, bytes: &[u8]) -> Result<IngestResult> {
+        let content_hash = hex::encode(Sha256::digest(bytes));
         let poll_timeout = self.inner.ingest_poll_timeout;
 
-        let result = match self.claim(&content_hash, filename).await? {
+        match self.claim(&content_hash, filename).await? {
             ClaimOutcome::Hit(mut r) => {
-                // If still converting, poll until terminal.
+                // Blob already existed server-side. Poll until terminal if it
+                // is still converting.
                 let deadline = std::time::Instant::now() + poll_timeout;
                 let mut backoff = std::time::Duration::from_millis(250);
                 while matches!(
@@ -148,22 +153,57 @@ impl DocumentsClient {
                         ClaimOutcome::Hit(new_r) => r = new_r,
                         ClaimOutcome::Miss => {
                             // Blob vanished mid-poll (likely GC or reconvert
-                            // claimed it). Fall through to upload to repopulate.
-                            return self.upload(filename, bytes).await;
+                            // claimed it). Re-upload to repopulate — that is a
+                            // fresh upload, so no longer deduplicated.
+                            let up = self.upload(filename, bytes.to_vec()).await?;
+                            return Self::finalize(up, false);
                         }
                     }
                 }
-                r
+                Self::finalize(r, true)
             }
-            ClaimOutcome::Miss => self.upload(filename, bytes).await?,
-        };
+            ClaimOutcome::Miss => {
+                let up = self.upload(filename, bytes.to_vec()).await?;
+                Self::finalize(up, false)
+            }
+        }
+    }
 
+    /// Turn a terminal [`UploadResult`] into an [`IngestResult`], surfacing a
+    /// `Failed` conversion as an error rather than an `Ok` value a caller might
+    /// mistake for success.
+    fn finalize(result: UploadResult, deduplicated: bool) -> Result<IngestResult> {
         if result.conversion_status == ConversionStatus::Failed {
             return Err(AkribesError::Other(format!(
                 "document {} conversion failed on the server — re-upload or call reconvert",
                 result.document_id
             )));
         }
-        Ok(result)
+        Ok(IngestResult {
+            document_id: result.document_id,
+            deduplicated,
+            conversion: result.conversion_status,
+        })
+    }
+
+    /// Fetch the current conversion status of a document by id
+    /// (`GET /documents/{id}`, projecting its `conversion_status` field).
+    ///
+    /// Mirrors the server's flat status vocabulary — `Text`, `Ready`,
+    /// `Converting`, `Pending`, `Failed` (and `Unknown` on schema drift). The
+    /// server has no structured `failed{reason}` variant: on failure this
+    /// returns [`ConversionStatus::Failed`] and the human-readable reason is
+    /// available separately via [`crate::sub::executions::ExecutionsClient::get_document`]'s
+    /// `conversion_error` field. A missing/inaccessible document surfaces as
+    /// `AkribesError::HttpStatus { status: 404, .. }`.
+    pub async fn status(&self, document_id: &str) -> Result<ConversionStatus> {
+        let url = format!(
+            "{}/documents/{}",
+            self.inner.base_url,
+            urlencoding::encode(document_id),
+        );
+        let res = self.c().send(self.c().inner.http.get(&url)).await?;
+        let wire: DocumentStatusWire = crate::client::decode_json(res).await?;
+        Ok(wire.conversion_status)
     }
 }

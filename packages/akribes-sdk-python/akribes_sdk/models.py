@@ -1340,6 +1340,12 @@ class BenchRun:
     notes: str | None = None
     mcp_session_id: str | None = None
     case_filter: list[str] | None = None
+    # Case-selection mode: ``"full"`` (default) or ``"sampled"``. For a
+    # sampled run the coordinator writes the drawn case ids into
+    # ``case_filter`` so the row records exactly which cases ran.
+    mode: str = "full"
+    # Requested sample size K for a ``"sampled"`` run; ``None`` for full runs.
+    sample_size: int | None = None
     mean_headline_score: float | None = None
     ok_cases: int | None = None
     status_breakdown: dict[str, int] | None = None
@@ -1397,7 +1403,7 @@ class BenchCase:
 
 @dataclass(frozen=True, slots=True)
 class CompareCase:
-    """Per-case score delta from ``GET /bench-runs/{a}/compare/{b}``."""
+    """Per-case score + cost delta from ``GET /bench-runs/{a}/compare/{b}``."""
 
     case_id: str
     case_label: str
@@ -1405,6 +1411,14 @@ class CompareCase:
     score_a: float | None = None
     score_b: float | None = None
     delta: float | None = None
+    #: Run A's cost for this case in USD (0.0 when absent in run A).
+    cost_a: float = 0.0
+    #: Run B's cost for this case in USD (0.0 when absent in run B).
+    cost_b: float = 0.0
+    #: ``cost_b - cost_a``. Positive ⇒ run B is a cost regression.
+    cost_delta: float = 0.0
+    #: cost_regressed | cost_improved | cost_unchanged
+    cost_flag: str = "cost_unchanged"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1414,6 +1428,19 @@ class CompareAggregate:
     n_regressed: int
     n_improved: int
     n_unchanged: int
+    #: Mean per-case cost delta in USD (``cost_delta_usd / case_count``).
+    mean_cost_delta: float = 0.0
+    #: Cost delta as a percentage of run A's total cost; ``None`` when run A
+    #: spent nothing.
+    cost_delta_pct: float | None = None
+    #: ``True`` when run B costs meaningfully more than run A overall.
+    cost_regression: bool = False
+    #: Number of cases that cost more in run B.
+    n_cost_regressed: int = 0
+    #: Number of cases that cost less in run B.
+    n_cost_improved: int = 0
+    #: Number of cases whose cost was unchanged within epsilon.
+    n_cost_unchanged: int = 0
 
 
 @dataclass(frozen=True, slots=True)

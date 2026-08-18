@@ -642,6 +642,8 @@ def parse_bench_run(data: dict[str, Any]) -> models.BenchRun:
         notes=data.get("notes"),
         mcp_session_id=data.get("mcp_session_id"),
         case_filter=data.get("case_filter"),
+        mode=data.get("mode", "full"),
+        sample_size=data.get("sample_size"),
         mean_headline_score=data.get("mean_headline_score"),
         ok_cases=data.get("ok_cases"),
         status_breakdown=data.get("status_breakdown"),
@@ -730,6 +732,12 @@ def parse_compare_report(data: dict[str, Any]) -> models.CompareReport:
             n_regressed=agg.get("n_regressed", 0),
             n_improved=agg.get("n_improved", 0),
             n_unchanged=agg.get("n_unchanged", 0),
+            mean_cost_delta=agg.get("mean_cost_delta", 0.0),
+            cost_delta_pct=agg.get("cost_delta_pct"),
+            cost_regression=agg.get("cost_regression", False),
+            n_cost_regressed=agg.get("n_cost_regressed", 0),
+            n_cost_improved=agg.get("n_cost_improved", 0),
+            n_cost_unchanged=agg.get("n_cost_unchanged", 0),
         ),
         per_case=[
             models.CompareCase(
@@ -739,6 +747,10 @@ def parse_compare_report(data: dict[str, Any]) -> models.CompareReport:
                 score_a=c.get("score_a"),
                 score_b=c.get("score_b"),
                 delta=c.get("delta"),
+                cost_a=c.get("cost_a", 0.0),
+                cost_b=c.get("cost_b", 0.0),
+                cost_delta=c.get("cost_delta", 0.0),
+                cost_flag=c.get("cost_flag", "cost_unchanged"),
             )
             for c in data.get("per_case", [])
         ],

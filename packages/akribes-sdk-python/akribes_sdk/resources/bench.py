@@ -287,17 +287,25 @@ class Bench(ProjectResource):
         channel: str,
         case_ids: list[str] | None = None,
         notes: str | None = None,
+        mode: str | None = None,
+        sample_size: int | None = None,
     ) -> BenchRun:
         """``POST /projects/{id}/scripts/{name}/bench/runs`` — trigger a run.
 
         ``case_ids`` constrains the fan-out to a subset (partial run); omit or
-        pass an empty list to run every case. Raises :class:`JudgeContractError`
-        on the contract pre-flight 400."""
+        pass an empty list to run every case. ``mode`` selects ``"full"`` (the
+        default — every case, or the ``case_ids`` subset) or ``"sampled"`` — a
+        random subset of ``sample_size`` cases (required for sampled runs).
+        Raises :class:`JudgeContractError` on the contract pre-flight 400."""
         body: dict[str, Any] = {"channel": channel}
         if case_ids is not None:
             body["case_ids"] = case_ids
         if notes is not None:
             body["notes"] = notes
+        if mode is not None:
+            body["mode"] = mode
+        if sample_size is not None:
+            body["sample_size"] = sample_size
         try:
             res = await self._request(
                 "POST", self._bench_url(script_name, "runs"), json=body

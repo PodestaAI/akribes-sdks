@@ -14,10 +14,19 @@ export class ProjectsClient {
     return this.http.fetchJson<Project[]>(this.base, opts);
   }
 
-  async create(name: string, opts?: { signal?: AbortSignal }): Promise<Project> {
+  /** Create a project. Pass `organizationName` to stamp it with a specific org
+   *  (honored only for wildcard/admin identities; an org-bound user token
+   *  inherits its own org). The server now requires every project to belong to
+   *  an org, so a wildcard/service token must supply one (C2). */
+  async create(
+    name: string,
+    opts?: { organizationName?: string; signal?: AbortSignal },
+  ): Promise<Project> {
+    const body: { name: string; organization_name?: string } = { name };
+    if (opts?.organizationName) body.organization_name = opts.organizationName;
     return this.http.fetchJson<Project>(this.base, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }), signal: opts?.signal,
+      body: JSON.stringify(body), signal: opts?.signal,
     });
   }
 

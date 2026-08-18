@@ -56,6 +56,7 @@ export type {
   CompareAggregate,
   CompareReport,
   CompareFlag,
+  CostCompareFlag,
   DriftedCase,
   DriftReport,
   CreateOrUpdateBenchRequest,
@@ -149,6 +150,8 @@ export { OrgConfigClient } from './sub/orgConfig';
 export type {
   OrgMcpConfigInput,
   OrgSecretMeta,
+  OrgSecretSaveResult,
+  SecretProbeResult,
   OrgModelPolicy,
   OrgSpendCap,
   OrgUsage,

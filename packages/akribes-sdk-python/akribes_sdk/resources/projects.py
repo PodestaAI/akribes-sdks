@@ -37,8 +37,18 @@ class Projects(Resource):
             return default  # type: ignore[return-value]
         return parse_project(res.json())
 
-    async def create(self, name: str) -> Project:
-        res = await self._request("POST", f"{self._base_url}/projects", json={"name": name})
+    async def create(self, name: str, *, organization_name: str | None = None) -> Project:
+        """Create a project.
+
+        Pass ``organization_name`` to stamp the project with a specific org
+        (honored only for wildcard/admin identities; an org-bound user token
+        inherits its own org). The server now requires every project to belong
+        to an organization, so a wildcard/service token must supply one.
+        """
+        body: dict[str, str] = {"name": name}
+        if organization_name is not None:
+            body["organization_name"] = organization_name
+        res = await self._request("POST", f"{self._base_url}/projects", json=body)
         return parse_project(res.json())
 
     async def update(self, project_id: int, name: str) -> Project:

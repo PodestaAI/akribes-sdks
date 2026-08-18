@@ -28,8 +28,32 @@ export type OrgMcpConfigInput = {
 export type OrgSecretMeta = {
   name: string;
   description: string | null;
+  /** Whether a script's `secret NAME` may resolve this entry. Defaults to
+   *  `false` (fail-closed). Provider-key names are never script-usable. */
+  script_usable: boolean;
   created_at: string;
   updated_at: string;
+};
+
+/** Outcome of the soft probe-on-save the server runs when a created/rotated
+ *  secret is a recognized provider key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+ *  `GEMINI_API_KEY`, or the `<PROVIDER>_API_KEY` convention).
+ *
+ *  - `verified` — the provider accepted the key.
+ *  - `failed` — the provider rejected it (401/403) or the probe couldn't
+ *    complete; `message` carries the reason. The save still succeeded.
+ *  - `unverified` — the probe doesn't apply (custom provider — no known base
+ *    URL server-side). */
+export type SecretProbeResult = {
+  status: 'verified' | 'failed' | 'unverified';
+  message?: string;
+};
+
+/** Create/rotate response: the saved secret's metadata, plus the probe outcome
+ *  when the name is a recognized provider key. Ordinary secrets have no
+ *  `probe` field at all. */
+export type OrgSecretSaveResult = OrgSecretMeta & {
+  probe?: SecretProbeResult;
 };
 
 /** Org model policy: a default model applied when a script omits one, plus an
@@ -188,13 +212,14 @@ export class OrgConfigClient {
     return this.http.fetchJson<OrgSecretMeta[]>(`${this.base(orgId)}/secrets`, opts);
   }
 
-  /** Add a new named secret. The value is write-only — never returned. */
+  /** Add a new named secret. The value is write-only — never returned.
+   *  Recognized provider keys carry a soft probe outcome in `probe`. */
   async createSecret(
     orgId: number,
     input: { name: string; value: string; description?: string },
     opts?: { signal?: AbortSignal },
-  ): Promise<OrgSecretMeta> {
-    return this.http.fetchJson<OrgSecretMeta>(`${this.base(orgId)}/secrets`, {
+  ): Promise<OrgSecretSaveResult> {
+    return this.http.fetchJson<OrgSecretSaveResult>(`${this.base(orgId)}/secrets`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
@@ -202,19 +227,40 @@ export class OrgConfigClient {
     });
   }
 
-  /** Rotate an existing secret's value (and optionally its description). */
+  /** Rotate an existing secret's value (and optionally its description).
+   *  Recognized provider keys carry a soft probe outcome in `probe`. */
   async rotateSecret(
     orgId: number,
     name: string,
     input: { value: string; description?: string },
     opts?: { signal?: AbortSignal },
-  ): Promise<OrgSecretMeta> {
-    return this.http.fetchJson<OrgSecretMeta>(
+  ): Promise<OrgSecretSaveResult> {
+    return this.http.fetchJson<OrgSecretSaveResult>(
       `${this.base(orgId)}/secrets/${encodeURIComponent(name)}`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(input),
+        signal: opts?.signal,
+      },
+    );
+  }
+
+  /** Toggle whether a script's `secret NAME` may resolve this secret (the
+   *  `script_usable` allowlist) WITHOUT rotating its value. Rejected for
+   *  provider-key names. Returns the updated metadata. */
+  async setSecretScriptUsable(
+    orgId: number,
+    name: string,
+    scriptUsable: boolean,
+    opts?: { signal?: AbortSignal },
+  ): Promise<OrgSecretMeta> {
+    return this.http.fetchJson<OrgSecretMeta>(
+      `${this.base(orgId)}/secrets/${encodeURIComponent(name)}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ script_usable: scriptUsable }),
         signal: opts?.signal,
       },
     );

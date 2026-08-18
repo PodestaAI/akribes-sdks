@@ -1,10 +1,73 @@
 //! Value type carried by every workflow input/output and engine event.
 
 use crate::error::{ErrorCode, ErrorDetail, ErrorKind, ErrorSource};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+
+/// The redacted placeholder every secret projection renders to. Kept as a
+/// single constant so `Debug`, `Display`, `Serialize`, and `to_json` all
+/// agree and a grep for the literal finds every redaction site.
+pub const SECRET_REDACTION: &str = "***";
+
+/// A secret string bound into the engine from a `secret NAME: str`
+/// declaration. Redacts by construction: `Debug`, `Display`, `Serialize`,
+/// and [`Value::to_json`] never emit the underlying bytes — they all render
+/// [`SECRET_REDACTION`]. The raw value is reachable only via
+/// [`RedactedSecret::expose`], used at the narrow request-construction sinks
+/// the analyzer permits (today: MCP server auth). This is redaction *by
+/// construction* — a secret cannot leak into an event, a checkpoint
+/// snapshot, or a log line even if a value accidentally flows there, because
+/// no serialization path can see the bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RedactedSecret(String);
+
+impl RedactedSecret {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Reveal the raw secret for outbound request construction (e.g. an MCP
+    /// `Authorization` header). The ONLY way to read the bytes — every other
+    /// projection redacts.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for RedactedSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RedactedSecret({SECRET_REDACTION})")
+    }
+}
+
+impl fmt::Display for RedactedSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(SECRET_REDACTION)
+    }
+}
+
+impl Serialize for RedactedSecret {
+    /// Serialize as the redaction marker, never the secret. Any path that
+    /// serializes a [`Value::Secret`] (engine events, state persistence,
+    /// execution snapshots) therefore emits `"***"` on the wire.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(SECRET_REDACTION)
+    }
+}
+
+impl<'de> Deserialize<'de> for RedactedSecret {
+    /// Round-trips a serialized (already-redacted) secret back to a
+    /// `RedactedSecret` holding the marker. Secrets are never meant to
+    /// persist and re-hydrate with their real value — they are re-resolved
+    /// from the org vault / process env on every run — so a deserialized
+    /// secret carrying `"***"` is the correct, lossy-by-design outcome.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(RedactedSecret(s))
+    }
+}
 
 /// JSON envelope key for an `Unable` payload — `{ "unable": { ... } }`.
 ///
@@ -172,6 +235,14 @@ pub enum Value {
     /// builtin — the variant ships now so every `match` site downstream
     /// is exhaustive before M7/M8 land.
     Json(serde_json::Value),
+    /// A secret value resolved from a `secret NAME: str` declaration (org
+    /// vault on the server, process env locally). Redacted by construction:
+    /// every serialization path renders [`SECRET_REDACTION`], never the
+    /// bytes. The analyzer confines a secret to request-construction sinks
+    /// (`AKRIBES-E-SECRET-SINK`), so this variant only ever reaches an MCP
+    /// auth builder that calls [`RedactedSecret::expose`]; if one reaches a
+    /// serialization path anyway, the redaction makes the leak inert.
+    Secret(RedactedSecret),
     Null,
 }
 
@@ -198,6 +269,7 @@ impl Value {
             Value::Union { .. } => "union",
             Value::FatalError { .. } => "error",
             Value::Json(_) => "json",
+            Value::Secret(_) => "secret",
             Value::Null => "null",
         }
     }
@@ -314,6 +386,11 @@ impl Value {
             }
             Value::AgentRef(data) => serde_json::json!({ "agent": data.name }),
             Value::Json(j) => j.clone(),
+            // Redaction by construction: a secret projected to wire JSON is
+            // the marker, never the bytes. Keeps events / snapshots / state
+            // that route through `to_json` structurally free of secret
+            // material.
+            Value::Secret(_) => serde_json::Value::String(SECRET_REDACTION.to_string()),
         }
     }
 
@@ -549,6 +626,13 @@ impl Hash for Value {
             // in its default `Map<String, Value>`. Acceptable for cache
             // keys today; cache-hit rate is a polish concern.
             Value::Json(j) => j.to_string().hash(state),
+            // A secret never contributes its bytes to a cache key. The
+            // analyzer forbids a secret from flowing into a task argument
+            // (`AKRIBES-E-SECRET-SINK`), so a secret can never legitimately
+            // become part of a task-cache key; hashing only the discriminant
+            // (already mixed in above) keeps secret material out of the
+            // hasher entirely.
+            Value::Secret(_) => {}
         }
     }
 }
@@ -610,6 +694,10 @@ impl fmt::Display for Value {
             Value::FatalError { message, .. } => write!(f, "{}", message),
             Value::AgentRef(data) => write!(f, "<agent:{}>", data.name),
             Value::Json(j) => write!(f, "{}", j),
+            // Prompt interpolation renders a value through `Display`; a
+            // secret renders as the marker so even an analyzer-unreachable
+            // interpolation cannot print the bytes.
+            Value::Secret(s) => write!(f, "{}", s),
         }
     }
 }
@@ -639,5 +727,39 @@ mod type_name_tests {
         let msg = format!("got {}", Value::Int(42).type_name());
         assert!(msg.contains("int"));
         assert!(!msg.contains("Int("));
+
+        assert_eq!(
+            Value::Secret(RedactedSecret::new("shh")).type_name(),
+            "secret"
+        );
+    }
+
+    #[test]
+    fn secret_value_redacts_across_every_projection() {
+        // A secret must never surface its bytes through Debug, Display,
+        // to_json, or serde. This is the redaction-by-construction contract
+        // that lets the engine bind a secret into env without any leak risk.
+        let raw = "sk-super-secret-42";
+        let v = Value::Secret(RedactedSecret::new(raw));
+
+        // Debug (used by tracing / panic messages).
+        let dbg = format!("{v:?}");
+        assert!(!dbg.contains(raw), "Debug leaked: {dbg}");
+        assert!(dbg.contains("***"));
+
+        // Display (prompt interpolation path).
+        assert_eq!(format!("{v}"), "***");
+
+        // Canonical wire JSON.
+        assert_eq!(v.to_json(), serde_json::Value::String("***".into()));
+
+        // Derived serde serialization (engine events / snapshots).
+        let ser = serde_json::to_string(&v).unwrap();
+        assert!(!ser.contains(raw), "serde leaked: {ser}");
+        assert!(ser.contains("***"));
+
+        // The raw value is only reachable via `expose`.
+        let Value::Secret(s) = &v else { unreachable!() };
+        assert_eq!(s.expose(), raw);
     }
 }

@@ -666,6 +666,52 @@ mod value_map_wire {
     }
 }
 
+/// Ephemeral cache window the engine asked Anthropic to use for the
+/// `cache_control` markers on a dispatch.
+///
+/// Anthropic offers two ephemeral TTLs: the default 5-minute window
+/// (cheapest write, ~1.25x the normal input rate) and the extended
+/// 1-hour window (more expensive write, ~2x input, but it survives long
+/// fan-outs). A cache read is ~10% of the normal input rate regardless
+/// of TTL.
+///
+/// The engine ([`crate::event`]'s producer in `akribes-core`) chooses the
+/// TTL *predictively*: a one-shot prefix that won't be read again before
+/// the window closes keeps the cheaper 5-minute write; a prefix that the
+/// DAG shows will be reused many times soon (bench fan-out being the
+/// canonical case) is written with the 1-hour TTL so the first call pays
+/// the write once and every later call reads at ~10%.
+///
+/// Wire form is the literal Anthropic value (`"5m"` / `"1h"`) so the
+/// serialized event is self-describing. `#[serde(default)]` callers and
+/// pre-existing wire payloads deserialize as [`CacheTtl::FiveMin`] (the
+/// conservative default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CacheTtl {
+    /// Anthropic's default 5-minute ephemeral cache window. Cheapest
+    /// write; used when no near-term reuse of the prefix is predicted.
+    #[serde(rename = "5m")]
+    #[default]
+    FiveMin,
+    /// Extended 1-hour ephemeral cache window (requires the
+    /// `extended-cache-ttl-2025-04-11` beta header, which akribes-core
+    /// always sets on Anthropic requests). Chosen when the engine
+    /// predicts the prefix will be reused many times before a 5-minute
+    /// window would close.
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    /// The literal value for Anthropic's `cache_control.ttl` field.
+    pub fn as_anthropic_ttl(self) -> &'static str {
+        match self {
+            CacheTtl::FiveMin => "5m",
+            CacheTtl::OneHour => "1h",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum EngineEvent {
@@ -867,6 +913,37 @@ pub enum EngineEvent {
         /// `tools_marker_placed`.
         #[serde(default)]
         system_marker_placed: bool,
+        /// How many *other* upcoming dispatches the engine predicts will
+        /// reuse this dispatch's cached prefix (tools + system + the
+        /// stable few-shot/rubric/input head). Derived from a DAG peek
+        /// over the running graph: every other `TaskCall` routed to the
+        /// same agent reuses that agent's stable prefix, so this is the
+        /// fan-out width minus the current dispatch. `0` means the engine
+        /// saw no reuse (a one-shot prefix). This is the signal that
+        /// drives `cache_ttl`.
+        ///
+        /// `#[serde(default)]` for backwards compat with payloads emitted
+        /// before predictive caching existed (they deserialize as `0`).
+        #[serde(default)]
+        predicted_reuse_count: usize,
+        /// The ephemeral cache TTL the engine chose for this dispatch's
+        /// `cache_control` markers. [`CacheTtl::OneHour`] when
+        /// `predicted_reuse_count` crosses the predictive threshold (the
+        /// prefix will be read many times before a 5-minute window would
+        /// close — bench fan-out), otherwise the cheaper
+        /// [`CacheTtl::FiveMin`].
+        ///
+        /// `#[serde(default)]` ⇒ old payloads deserialize as `FiveMin`.
+        #[serde(default)]
+        cache_ttl: CacheTtl,
+        /// Short human-readable explanation of why `cache_ttl` was chosen
+        /// — surfaced so the predictive decision is transparent (no
+        /// magic) in the CLI verbose log, Studio cache panel, and bench
+        /// cost analyser. Empty string on the synthetic per-provider
+        /// events that don't run the placement engine, and on old wire
+        /// payloads (the `#[serde(default)]` default).
+        #[serde(default)]
+        cache_reason: String,
     },
     Suspended {
         checkpoint_name: String,
@@ -960,6 +1037,41 @@ pub enum EngineEvent {
     BreakpointResumed {
         node_id: NodeId,
         token: String,
+    },
+    /// A provider call was enqueued for asynchronous batch submission
+    /// instead of being dispatched live. Emitted by the engine's
+    /// batch-mode dispatch path (non-interactive bench traffic routed
+    /// through Anthropic Message Batches / OpenAI Batch, ~50% cheaper).
+    ///
+    /// The execution then parks on a `Suspended` event keyed on the same
+    /// `token`; a batch runner (the in-process single-execution poller,
+    /// or the server's cross-execution bench coordinator) submits the
+    /// collected requests as one provider batch, polls for completion,
+    /// and resumes each parked execution via the normal resume path —
+    /// emitting a matching `Resumed` event when the result lands.
+    ///
+    /// This is observability + a durable marker: consumers (Studio's
+    /// trace panel, the bench cost analyser) render a "queued for batch"
+    /// badge and can correlate the eventual `Resumed` back to this
+    /// dispatch by `token`. `custom_id` mirrors `token` — it is the id
+    /// carried on the wire to the provider's batch API so the returned
+    /// per-request result can be routed home.
+    BatchQueued {
+        /// Resume token registered in the engine's `resume_senders` map.
+        /// Also used as the provider batch request's `custom_id`.
+        token: String,
+        /// The provider family the request will be submitted to
+        /// (`"anthropic"` / `"openai"`).
+        provider: String,
+        /// The model the request targets.
+        model: String,
+        /// The engine node id this dispatch belongs to (stringified
+        /// `NodeId`), so consumers can line the batch up against the
+        /// task in the trace.
+        node_id: String,
+        /// Whether the request carries a JSON schema (structured output).
+        #[serde(default)]
+        structured: bool,
     },
     ToolCallStart {
         task_name: String,
@@ -1322,6 +1434,32 @@ pub enum EngineEvent {
         agent: String,
         key_prefix: String,
     },
+    /// Model cascade (`escalate_to:` task property): the task's cheap
+    /// agent exhausted its `validation_retries` acceptance budget, so the
+    /// engine is re-running the SAME task body with a stronger agent
+    /// instead of routing to `on_validation_exhausted` / failing.
+    ///
+    /// Emitted exactly once per escalation, AFTER the cheap run's
+    /// (`variant: Failed`) `TaskEnd` and BEFORE the escalated run's own
+    /// `TaskStart`. There is only ever one escalation level: if the
+    /// escalated run also fails acceptance it falls through to the
+    /// existing exhaustion behaviour and no further `TaskEscalated` is
+    /// emitted. Consumers can pair this with the two `TaskEnd`s (cheap
+    /// `Failed` → strong result) to render the cascade; token/cost
+    /// accounting is carried on each `TaskEnd` independently, so both the
+    /// cheap and the escalated call are attributed.
+    ///
+    /// * `task` — the task that escalated.
+    /// * `from_agent` — the cheap agent the task first ran under.
+    /// * `to_agent` — the `escalate_to:` agent the task is re-running with.
+    /// * `reason` — short human-readable cause (e.g. "validation failed
+    ///   after 3 attempt(s)").
+    TaskEscalated {
+        task: String,
+        from_agent: String,
+        to_agent: String,
+        reason: String,
+    },
     /// LLM provider response captured for durable replay. Carries the full
     /// response (text + tool-use blocks + usage) keyed by `(node_id,
     /// call_index)`. See `crates/akribes-core/src/replay_cache.rs`.
@@ -1425,6 +1563,31 @@ pub enum EngineEvent {
         task_name: String,
         kind: String,
         message: String,
+    },
+    /// Emitted when the engine starts an `http:` request task's outbound dial.
+    /// One event per attempt (a `retry(N)` policy re-emits it). `task_name`
+    /// matches the wrapping `TaskStart`/`TaskEnd` pair so SDK reducers that
+    /// group by task keep working. `url` is the **redacted** request URL:
+    /// query values derived from a `secret` are replaced with `***`, and it
+    /// carries no headers (headers, and thus any `Authorization`/auth
+    /// material, are never emitted).
+    HttpCallStart {
+        call_id: String,
+        task_name: String,
+        method: String,
+        url: String,
+    },
+    /// The `http:` request attempt settled. `status` is the HTTP status code
+    /// (`0` for a transport failure — timeout / connect error / SSRF refusal).
+    /// `bytes` is the response body length. `is_error` is true for any non-2xx
+    /// status or a transport failure. Headers never appear here.
+    HttpCallEnd {
+        call_id: String,
+        task_name: String,
+        status: u16,
+        duration_ms: u64,
+        bytes: u64,
+        is_error: bool,
     },
 }
 
@@ -2514,6 +2677,46 @@ mod tests {
                 assert_eq!(key_prefix, "f7d3a9");
             }
             other => panic!("expected TaskCacheHit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_escalated_serializes_with_from_and_to_agents() {
+        // Model cascade: the engine emits this when a cheap agent
+        // exhausts its validation budget and the task re-runs with the
+        // `escalate_to:` agent.
+        let ev = EngineEvent::TaskEscalated {
+            task: "classify".into(),
+            from_agent: "cheap".into(),
+            to_agent: "strong".into(),
+            reason: "validation failed after 3 attempt(s)".into(),
+        };
+        let j = serde_json::to_value(&ev).unwrap();
+        assert_eq!(j["type"], "TaskEscalated");
+        assert_eq!(j["payload"]["task"], "classify");
+        assert_eq!(j["payload"]["from_agent"], "cheap");
+        assert_eq!(j["payload"]["to_agent"], "strong");
+        assert_eq!(
+            j["payload"]["reason"],
+            "validation failed after 3 attempt(s)"
+        );
+
+        // Round-trip
+        let s = serde_json::to_string(&ev).unwrap();
+        let back: EngineEvent = serde_json::from_str(&s).unwrap();
+        match back {
+            EngineEvent::TaskEscalated {
+                task,
+                from_agent,
+                to_agent,
+                reason,
+            } => {
+                assert_eq!(task, "classify");
+                assert_eq!(from_agent, "cheap");
+                assert_eq!(to_agent, "strong");
+                assert_eq!(reason, "validation failed after 3 attempt(s)");
+            }
+            other => panic!("expected TaskEscalated, got {other:?}"),
         }
     }
 

@@ -36,7 +36,37 @@ impl ProjectsClient {
 
     pub async fn create(&self, name: &str) -> Result<Project> {
         let url = format!("{}/projects", self.inner.base_url);
-        self.c().post(&url, &CreateProjectRequest { name }).await
+        self.c()
+            .post(
+                &url,
+                &CreateProjectRequest {
+                    name,
+                    organization_name: None,
+                },
+            )
+            .await
+    }
+
+    /// Create a project stamped with a specific organization (by name).
+    /// Honored only for wildcard/admin identities; an org-bound user token
+    /// inherits its own org and can pass `None`. Lets callers create a project
+    /// on a server that now requires every project to belong to an org (C2)
+    /// without dropping to a raw JSON body.
+    pub async fn create_with_org(
+        &self,
+        name: &str,
+        organization_name: Option<&str>,
+    ) -> Result<Project> {
+        let url = format!("{}/projects", self.inner.base_url);
+        self.c()
+            .post(
+                &url,
+                &CreateProjectRequest {
+                    name,
+                    organization_name,
+                },
+            )
+            .await
     }
 
     pub async fn update(&self, project_id: i64, name: &str) -> Result<Project> {

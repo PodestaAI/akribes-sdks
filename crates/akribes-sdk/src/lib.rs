@@ -49,7 +49,7 @@ pub use sub::channels::ChannelsClient;
 pub use sub::clients::RegisteredClientsClient;
 pub use sub::convert::ConvertClient;
 pub use sub::documents::DocumentsClient;
-pub use sub::drafts::DraftsClient;
+pub use sub::drafts::{DraftsClient, SaveDraftOptions};
 pub use sub::events::EventsClient;
 pub use sub::executions::ExecutionsClient;
 pub use sub::projects::ProjectsClient;
@@ -1293,6 +1293,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_await_execution_suspended() {
+        // A suspended execution is a *terminal* await outcome (#P10): the
+        // poll loop must return `Ok(output)` with `status == "suspended"`
+        // so callers can branch on it, rather than spinning to the
+        // deadline (the historical "black hole" that surfaced as a
+        // timeout). A generous timeout here would hang the whole test if
+        // the loop still treated "suspended" as non-terminal — instead it
+        // returns on the first poll.
+        let mut server = Server::new_async().await;
+        let body = r#"{"status":"suspended","error":null,"error_kind":null,"result":null}"#;
+        let _m = server
+            .mock("GET", "/executions/susp-1/output")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = make_client(&server);
+        let out = client
+            .executions()
+            .await_execution("susp-1", Some(1000), Some(10))
+            .await
+            .unwrap();
+        assert_eq!(out.status, "suspended");
     }
 
     #[tokio::test]
